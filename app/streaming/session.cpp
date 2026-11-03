@@ -4337,12 +4337,11 @@ bool Session::startConnectionAsync(bool reconnecting,
             }
             else if (activeSessionConflict) {
                 if (reconnecting) {
-                    m_CanReconnect.store(false);
-                    m_ReconnectCancelled.store(true);
-                    emit displayLaunchError(
-                                tr("This BDE fernweh session was transferred to another client."));
-                    qInfo() << "PLANK reconnect stopped because another client owns the active session";
-                    return false;
+                    // The Host may still be retiring our previous transport.
+                    // A busy response does not prove another client took over.
+                    // Use the normal bounded/continuous recovery policy; only
+                    // an explicit takeover termination ends recovery as such.
+                    throw;
                 }
                 if (takeOverActiveSession ||
                         (m_Computer->plankFeatureFlags &
@@ -5224,9 +5223,7 @@ bool Session::runPlankReconnect()
                 return true;
             }
         } catch (const MacSessionActiveException&) {
-            m_CanReconnect.store(false);
-            m_ReconnectCancelled.store(true);
-            emit displayLaunchError(tr("Another client has an active BDE fernweh session. Connect again to take it over."));
+            qInfo() << "PLANK previous Mac session is still retiring; retrying recovery";
         } catch (const GfeHttpResponseException& error) {
             qWarning() << "PLANK reconnect attempt" << attempt
                        << "failed:" << error.toQString();
