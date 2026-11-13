@@ -687,7 +687,7 @@ wayland {
 
 RESOURCES += \
     resources.qrc \
-    qml.qrc
+    $$FERNWEH_QML_RESOURCE
 
 TRANSLATIONS += \
     languages/qml_zh_CN.ts \
@@ -828,6 +828,7 @@ macx {
     # Contents/MacOS/plank-passkey so it is signed together with the app.
     # It uses only system frameworks (CryptoKit Secure Enclave keys whose
     # wrapped blob is stored in a file) and needs no entitlement.
+    equals(FERNWEH_BROKER_ENABLED, 1) {
     PLANK_PASSKEY_SOURCE = $$PWD/passkey/plank-passkey.swift
     PLANK_PASSKEY_BINARY = $$OUT_PWD/$${TARGET}.app/Contents/MacOS/plank-passkey
     plank_passkey.target = $$PLANK_PASSKEY_BINARY
@@ -842,6 +843,15 @@ macx {
     QMAKE_EXTRA_TARGETS += plank_passkey
     PRE_TARGETDEPS += $$PLANK_PASSKEY_BINARY
     QMAKE_CLEAN += $$PLANK_PASSKEY_BINARY
+    } else {
+        # A reused output directory must not ship the helper from an earlier
+        # broker-enabled build. Keep ordinary qmake builds correct too.
+        plank_no_broker_helper.target = plank_no_broker_helper
+        plank_no_broker_helper.depends = FORCE
+        plank_no_broker_helper.commands = $$QMAKE_DEL_FILE $$shell_quote($$OUT_PWD/$${TARGET}.app/Contents/MacOS/plank-passkey)
+        QMAKE_EXTRA_TARGETS += plank_no_broker_helper
+        PRE_TARGETDEPS += plank_no_broker_helper
+    }
 }
 
 isEmpty(PLANK_VERSION) {
@@ -863,4 +873,17 @@ win32 {
         HEADERS += streaming/windowsfileclipboard.h streaming/windowsfileclipboardpaths.h
         LIBS += -ladvapi32 -lshell32 -luser32
     }
+}
+
+# A direct-only product has no broker API, session store, device keys, remote
+# account UI, enrollment, diagnostics uploader or broker-based updater objects.
+!equals(FERNWEH_BROKER_ENABLED, 1) {
+    SOURCES -= backend/brokersessionstore.cpp backend/brokerdevicekey.cpp \
+        backend/plankbrokerclient.cpp backend/fernwehupdater.cpp backend/betadiagnostics.cpp \
+        backend/plankenrollment.cpp backend/plankpasskey.cpp backend/qrencoder.cpp \
+        gui/remotebroker.cpp gui/onboardingcontroller.cpp
+    HEADERS -= backend/brokersessionstore.h backend/brokerdevicekey.h \
+        backend/plankbrokerclient.h backend/fernwehupdater.h backend/betadiagnostics.h \
+        backend/plankenrollment.h backend/plankpasskey.h backend/qrencoder.h \
+        gui/remotebroker.h gui/onboardingcontroller.h
 }

@@ -26,6 +26,7 @@
 #include <QPointer>
 #include <QTimer>
 #include "clientidentity.h"
+#include "backend/fernwehdeployment.h"
 #include "backend/internetconnectivity.h"
 #include "backend/clientinstances.h"
 
@@ -68,11 +69,15 @@
 #include "path.h"
 #include "utils.h"
 #include "gui/computermodel.h"
+#if FERNWEH_BROKER_ENABLED
 #include "gui/remotebroker.h"
 #include "gui/onboardingcontroller.h"
+#endif
 #include "gui/displaysetupcontroller.h"
 #include "backend/computermanager.h"
+#if FERNWEH_BROKER_ENABLED
 #include "backend/fernwehupdater.h"
+#endif
 #include <QSslSocket>
 #include "backend/systemproperties.h"
 #include "streaming/session.h"
@@ -969,6 +974,7 @@ int main(int argc, char *argv[])
                                               [](QQmlEngine* qmlEngine, QJSEngine*) -> QObject* {
                                                   return new ComputerManager(StreamingPreferences::get(qmlEngine));
                                               });
+#if FERNWEH_BROKER_ENABLED
     qmlRegisterSingletonType<RemoteBroker>("RemoteBroker", 1, 0,
                                            "RemoteBroker",
                                            [](QQmlEngine* qmlEngine, QJSEngine*) -> QObject* {
@@ -987,7 +993,8 @@ int main(int argc, char *argv[])
                                                                    qmlTypeId("RemoteBroker", 1, 0, "RemoteBroker"));
                                                        return new OnboardingController(broker);
                                                    });
-    // Display setup: the wizard, Settings > Displays and the change banner.
+#endif
+    // Shared display setup remains available for direct and brokered sessions.
     qmlRegisterSingletonType<DisplaySetupController>("DisplaySetup", 1, 0,
                                                      "DisplaySetup",
                                                      [](QQmlEngine*, QJSEngine*) -> QObject* {
@@ -1032,6 +1039,7 @@ int main(int argc, char *argv[])
     bool showOnboarding = false;
     switch (commandLineParserResult) {
     case GlobalCommandLineParser::NormalStartRequested:
+#if FERNWEH_BROKER_ENABLED
         // A configured deployment starts at its broker; a generic build opens
         // local bookmarks and can configure Remote mode in Settings.
         initialView = !StreamingPreferences::get()->brokerHost.isEmpty() &&
@@ -1041,6 +1049,9 @@ int main(int argc, char *argv[])
         // top of it; anyone who used this Mac before never sees it unasked.
         showOnboarding = initialView == "qrc:/gui/RemoteView.qml" &&
                          OnboardingController::shouldShowOnLaunch(StreamingPreferences::get());
+#else
+        initialView = "qrc:/gui/PcView.qml";
+#endif
         break;
 #ifdef Q_OS_MACOS
     case GlobalCommandLineParser::PermissionsSetupRequested:

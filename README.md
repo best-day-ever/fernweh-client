@@ -15,6 +15,10 @@ and [configuration guide](https://github.com/best-day-ever/fernweh/blob/main/doc
 | Windows x64 | MSVC 2022/Qt 6.10.2; ALPHA Client/MSI tooling |
 | Ubuntu 26.04 x86-64 | Inherited PLANK Qt/Wayland path; new-fork acceptance required |
 
+Choose `FERNWEH_BROKER_ENABLED=0` (default) for direct-only access, or `1` to
+compile broker sign-in, device sessions and relay support. The disabled executable
+omits broker backends/UI, enrollment, the passkey helper and broker updates.
+
 `FERNWEH_BROKER_HOST`, `FERNWEH_BROKER_PORT`, `FERNWEH_BROKER_PINS`,
 `FERNWEH_PASSKEY_RP_ID` and `FERNWEH_UPDATES_ENABLED` configure a studio build.
 `deployment/fernweh.pri` validates the environment with Python 3 before compilation.

@@ -7,17 +7,17 @@ import sys
 import tempfile
 import unittest
 
-from configure import settings
+from configure import settings, profile_qml, resources
 
 
 class DeploymentSettings(unittest.TestCase):
     def configured(self):
-        return {"FERNWEH_BROKER_HOST": "broker.example.org",
+        return {"FERNWEH_BROKER_ENABLED": "1", "FERNWEH_BROKER_HOST": "broker.example.org",
                 "FERNWEH_BROKER_PINS": "a" * 64,
                 "FERNWEH_PASSKEY_RP_ID": "ipa.example.org"}
 
     def test_default_build_has_no_endpoint_trust_or_updates(self):
-        self.assertEqual(settings({}), {"BrokerHost": "", "BrokerPort": 29000,
+        self.assertEqual(settings({}), {"BrokerEnabled": False, "BrokerHost": "", "BrokerPort": 29000,
                          "BrokerPins": "", "PasskeyRpId": "", "UpdatesEnabled": False})
 
     def test_operator_settings_are_normalized(self):
@@ -34,17 +34,17 @@ class DeploymentSettings(unittest.TestCase):
         self.assertTrue(result["UpdatesEnabled"])
 
     def test_broker_and_trust_must_be_provisioned_together(self):
-        for config in ({"FERNWEH_BROKER_HOST": "broker.example.org"},
-                       {"FERNWEH_BROKER_PINS": "a" * 64}):
+        for config in ({"FERNWEH_BROKER_ENABLED": "1", "FERNWEH_BROKER_HOST": "broker.example.org"},
+                       {"FERNWEH_BROKER_ENABLED": "1", "FERNWEH_BROKER_PINS": "a" * 64}):
             with self.subTest(config=list(config)), self.assertRaises(ValueError):
                 settings(config)
 
     def test_port_bounds_and_non_integer_inputs(self):
         for value in ("0", "65536", "-1", "1.5", "1e3", "NaN", "", " 29000", "1;exit"):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                settings({"FERNWEH_BROKER_PORT": value})
+                settings({"FERNWEH_BROKER_ENABLED": "1", "FERNWEH_BROKER_PORT": value})
         for value in ("1", "65535"):
-            self.assertEqual(settings({"FERNWEH_BROKER_PORT": value})["BrokerPort"], int(value))
+            self.assertEqual(settings({"FERNWEH_BROKER_ENABLED": "1", "FERNWEH_BROKER_PORT": value})["BrokerPort"], int(value))
 
     def test_addresses_cannot_inject_build_commands_or_cpp(self):
         for value in ('x";system("exit")', "$(exit)", "`exit`", "host;exit", "bad host",
@@ -66,7 +66,7 @@ class DeploymentSettings(unittest.TestCase):
 
     def test_updates_are_opt_in_and_require_trust(self):
         self.assertFalse(settings(self.configured())["UpdatesEnabled"])
-        for config in ({"FERNWEH_UPDATES_ENABLED": "1"},
+        for config in ({"FERNWEH_BROKER_ENABLED": "1", "FERNWEH_UPDATES_ENABLED": "1"},
                        dict(self.configured(), FERNWEH_UPDATES_ENABLED="true")):
             with self.subTest(config=list(config)), self.assertRaises(ValueError):
                 settings(config)
@@ -82,11 +82,44 @@ class DeploymentSettings(unittest.TestCase):
             before = (output.read_bytes(), output.stat().st_mtime_ns)
             subprocess.run(command, env=environ, check=True)
             self.assertEqual((output.read_bytes(), output.stat().st_mtime_ns), before)
-            result = subprocess.run(command, env=dict(environ, FERNWEH_BROKER_HOST="bad\"host"),
+            result = subprocess.run(command, env=dict(environ, FERNWEH_BROKER_ENABLED="1", FERNWEH_BROKER_HOST="bad\"host"),
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
             self.assertNotIn('bad"host', result.stderr)
             self.assertEqual(output.read_bytes(), before[0])
+
+    def test_disabling_broker_ignores_existing_studio_environment(self):
+        config = dict(self.configured(), FERNWEH_BROKER_ENABLED="0", FERNWEH_UPDATES_ENABLED="1",
+                      FERNWEH_BROKER_PORT="invalid", FERNWEH_BROKER_PINS="invalid")
+        self.assertEqual(settings(config), settings({}))
+
+    def test_broker_capability_requires_explicit_opt_in(self):
+        self.assertTrue(settings({"FERNWEH_BROKER_ENABLED": "1"})["BrokerEnabled"])
+        for value in ("true", "yes", "2", "", "0;exit"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                settings({"FERNWEH_BROKER_ENABLED": value})
+
+    def test_qml_selection_is_balanced_and_preserves_common_content(self):
+        source = "common\n// @fernweh-broker-begin\noptional\n// @fernweh-broker-end\ncommon2\n"
+        self.assertEqual(profile_qml(source, False), "common\ncommon2\n")
+        self.assertEqual(profile_qml(source, True), "common\noptional\ncommon2\n")
+        for source in ("// @fernweh-broker-begin\n", "// @fernweh-broker-end\n"):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                profile_qml(source, False)
+
+    def test_broker_resources_are_removed_when_reconfiguring_same_directory(self):
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            def aliases():
+                return {e.get("alias") for e in ET.parse(output / "qml.qrc").iter("file")}
+            resources(output, True)
+            self.assertIn("gui/RemoteView.qml", aliases())
+            self.assertIn("backend/fernweh-install-update.ps1", aliases())
+            resources(output, False)
+            self.assertIn("gui/PcView.qml", aliases())
+            self.assertNotIn("gui/RemoteView.qml", aliases())
+            self.assertNotIn("backend/fernweh-install-update.ps1", aliases())
 
 
 if __name__ == "__main__":

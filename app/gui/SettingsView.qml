@@ -4,11 +4,13 @@ import QtQuick.Layouts 1.2
 import QtQuick.Window 2.2
 
 import StreamingPreferences 1.0
+import DisplaySetup 1.0
 import ComputerManager 1.0
 import SystemProperties 1.0
+// @fernweh-broker-begin
 import RemoteBroker 1.0
-import DisplaySetup 1.0
 import FernwehUpdater 1.0
+// @fernweh-broker-end
 
 Flickable {
     id: settingsPage
@@ -1174,9 +1176,10 @@ Flickable {
         PlankSection {
             id: remoteAccessGroupBox
             width: (parent.width - (parent.leftPadding + parent.rightPadding))
-            title: qsTr("Remote Access")
+            title: qsTr("Connections")
 
             PlankSettingsGrid {
+// @fernweh-broker-begin
 
                 // Stream quality for remote workstations without their own
                 // settings (each workstation's Settings… can override it).
@@ -1590,6 +1593,7 @@ Flickable {
                     }
                 }
 
+// @fernweh-broker-end
                 PlankSettingLabel {
                     text: qsTr("Automatically find workstations on the local network")
                 }
