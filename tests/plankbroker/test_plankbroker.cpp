@@ -501,11 +501,10 @@ void TestPlankBroker::parsesPinLists()
 void TestPlankBroker::shipsCanonicalDefaultPins()
 {
     const QStringList pins = PlankBroker::defaultPins();
-    QCOMPARE(pins.size(), 2); // current + spare
     for (const QString& pin : pins) QVERIFY(PlankBroker::isCanonicalSha256Hex(pin));
     QCOMPARE(PlankBroker::normalizePins(pins), pins);
-    QCOMPARE(PlankBroker::defaultHost(), QStringLiteral("remote.bde.run"));
-    QCOMPARE(PlankBroker::DefaultPort, quint16(29000));
+    QCOMPARE(PlankBroker::defaultHost(), QString::fromLatin1(FernwehDeployment::BrokerHost));
+    QCOMPARE(PlankBroker::DefaultPort, quint16(FernwehDeployment::BrokerPort));
 }
 
 void TestPlankBroker::extractsSpkiFromEcAndRsaCertificates()
@@ -1074,10 +1073,10 @@ void TestPlankBroker::clientRefusesWithoutPins()
     } catch (const PlankBrokerError& error) {
         QCOMPARE(error.kind(), PlankBrokerError::NotConfigured);
     }
-    config.pins = PlankBroker::defaultPins();
+    config.pins = {QString::fromLatin1(EcSpkiSha256)};
     config.host = QStringLiteral("bad host/");
     QVERIFY_THROWS_EXCEPTION(PlankBrokerError, PlankBrokerClient(config).checkConfigured());
-    config.host = PlankBroker::defaultHost();
+    config.host = QStringLiteral("broker.example.org");
     PlankBrokerClient(config).checkConfigured();
 }
 
@@ -2248,11 +2247,12 @@ void TestPlankBroker::passwordAnswersNeverSatisfyPasskeyPrompt()
 
 void TestPlankBroker::validatesPasskeyRpIdsAndUsernames()
 {
-    QVERIFY(PlankBroker::isPasskeyRpId(QStringLiteral("ipa.bde.run")));
+    QVERIFY(PlankBroker::isPasskeyRpId(QStringLiteral("ipa.example.org")));
     QVERIFY(PlankBroker::isPasskeyRpId(QStringLiteral("ipa-1.example.test")));
-    QVERIFY(PlankBroker::isPasskeyRpId(PlankBroker::defaultPasskeyRpId()));
-    for (const char* bad : {"", "IPA.bde.run", "ipa.bde.run.", ".ipa", "ipa..run", "-ipa.run", "ipa-.run",
-                            "10.0.0.1", "ipa.bde.run:443", "ipa bde", "ipa/bde"}) {
+    QVERIFY(PlankBroker::defaultPasskeyRpId().isEmpty() ||
+            PlankBroker::isPasskeyRpId(PlankBroker::defaultPasskeyRpId()));
+    for (const char* bad : {"", "IPA.example.org", "ipa.example.org.", ".ipa", "ipa..org", "-ipa.org", "ipa-.org",
+                            "192.0.2.1", "ipa.example.org:443", "ipa example", "ipa/example"}) {
         QVERIFY2(!PlankBroker::isPasskeyRpId(QString::fromLatin1(bad)), bad);
     }
     QCOMPARE(PlankBroker::normalizePasskeyUsername(QStringLiteral("  Anna ")), QStringLiteral("anna"));

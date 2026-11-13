@@ -1032,12 +1032,15 @@ int main(int argc, char *argv[])
     bool showOnboarding = false;
     switch (commandLineParserResult) {
     case GlobalCommandLineParser::NormalStartRequested:
-        // BDE build: people sign in through the studio broker (remote.bde.run);
-        // LAN bookmarks stay one click away ("Local workstations").
-        initialView = "qrc:/gui/RemoteView.qml";
+        // A configured deployment starts at its broker; a generic build opens
+        // local bookmarks and can configure Remote mode in Settings.
+        initialView = !StreamingPreferences::get()->brokerHost.isEmpty() &&
+                      !StreamingPreferences::get()->brokerPins.isEmpty() ?
+                      "qrc:/gui/RemoteView.qml" : "qrc:/gui/PcView.qml";
         // A brand-new installation opens with the first sign-in wizard on
         // top of it; anyone who used this Mac before never sees it unasked.
-        showOnboarding = OnboardingController::shouldShowOnLaunch(StreamingPreferences::get());
+        showOnboarding = initialView == "qrc:/gui/RemoteView.qml" &&
+                         OnboardingController::shouldShowOnLaunch(StreamingPreferences::get());
         break;
 #ifdef Q_OS_MACOS
     case GlobalCommandLineParser::PermissionsSetupRequested:

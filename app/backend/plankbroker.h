@@ -25,21 +25,18 @@
 #include <QtGlobal>
 #include <limits>
 #include <optional>
+#include "fernwehdeployment.h"
 
 namespace PlankBroker
 {
 
-constexpr quint16 DefaultPort = 29000;
-inline QString defaultHost() { return QStringLiteral("remote.bde.run"); }
+constexpr quint16 DefaultPort = FernwehDeployment::BrokerPort;
+inline QString defaultHost() { return QString::fromLatin1(FernwehDeployment::BrokerHost); }
 
-// SPKI SHA-256 of the default broker's TLS keys: current + pre-generated
-// spare for rotation (self-signed ECDSA P-256). Public-key hashes only.
+// Public SPKI hashes supplied by the operator at build time. Empty fails closed.
 inline QStringList defaultPins()
 {
-    return {
-        QStringLiteral("98819b466897df136a0bfc7d2c2c90ba74e5017a283b937f5f776e7d760f78b1"),
-        QStringLiteral("ff5529586e78d22da21e3b1d0afd8aecbe695dc5d6888084489d9547e4e1dd0d"),
-    };
+    return QString::fromLatin1(FernwehDeployment::BrokerPins).split(QLatin1Char(','), Qt::SkipEmptyParts);
 }
 
 constexpr int MaximumReplyBytes = 256 * 1024;
@@ -57,7 +54,7 @@ constexpr int MaximumPasskeyCredentialIdBytes = 1024;
 constexpr int MinimumPasskeyAuthenticatorDataBytes = 37;
 constexpr int MaximumPasskeyAuthenticatorDataBytes = 1024;
 constexpr int MaximumPasskeySignatureBytes = 256;
-inline QString defaultPasskeyRpId() { return QStringLiteral("ipa.bde.run"); }
+inline QString defaultPasskeyRpId() { return QString::fromLatin1(FernwehDeployment::PasskeyRpId); }
 
 // ---------------------------------------------------------------------------
 // SHA-256 hex values (broker SPKI pins, host leaf certificate pins)

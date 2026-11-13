@@ -9,3 +9,6 @@ cmake-build-*/
 libs/
 config.tests/*/.qmake.stash
 config.tests/*/Makefile
+
+# Python deployment validator cache
+**/__pycache__/

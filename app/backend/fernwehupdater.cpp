@@ -32,7 +32,7 @@ FernwehUpdater::FernwehUpdater(StreamingPreferences* preferences)
 bool FernwehUpdater::supported() const
 {
 #if defined(Q_OS_MACOS) || (defined(Q_OS_WIN32) && defined(_M_X64))
-    return true;
+    return FernwehDeployment::UpdatesEnabled;
 #else
     return false;
 #endif

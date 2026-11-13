@@ -1541,7 +1541,7 @@ Flickable {
 
                 PlankSettingHelp {
                     visible: RemoteBroker.passkeySupported
-                    text: qsTr("Your studio's identity domain, which Touch ID sign-in keys belong to (default ipa.bde.run).")
+                    text: qsTr("Your studio's identity domain, which Touch ID sign-in keys belong to. Ask your administrator for the relying party ID.")
                 }
             }
         }

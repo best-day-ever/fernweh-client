@@ -1,5 +1,6 @@
 QT += core quick network quickcontrols2 svg
 CONFIG += c++17
+include(../deployment/fernweh.pri)
 
 unix:contains(CONFIG, plank-transport) {
     isEmpty(PLANK_TRANSPORT_DIR) {
