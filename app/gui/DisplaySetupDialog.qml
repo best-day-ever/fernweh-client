@@ -3,7 +3,9 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.3
 
 import DisplaySetup 1.0
+// @fernweh-broker-begin
 import RemoteBroker 1.0
+// @fernweh-broker-end
 
 // The display setup wizard: which of this computer's screens the workstation
 // uses, at what size, and where; with the manual setup one click away. Opened
@@ -45,7 +47,11 @@ NavigableDialog {
 
     function openForSession(streamSession) {
         dialog.session = streamSession
-        openFor(RemoteBroker.streamingHostId(), "", "new-screens", false, 0)
+        var streamingHostId = ""
+// @fernweh-broker-begin
+        streamingHostId = RemoteBroker.streamingHostId()
+// @fernweh-broker-end
+        openFor(streamingHostId, "", "new-screens", false, 0)
     }
 
     function returnToStream(apply) {
@@ -66,7 +72,9 @@ NavigableDialog {
         returnToStream(true)
         dialog.close()
         if (dialog.connectAfter && dialog.hostId !== "") {
+// @fernweh-broker-begin
             RemoteBroker.connectToHost(dialog.hostId)
+// @fernweh-broker-end
         }
     }
 
@@ -149,7 +157,9 @@ NavigableDialog {
                     onFixedLayoutSaved: {
                         dialog.close()
                         if (dialog.connectAfter && dialog.hostId !== "") {
-                            RemoteBroker.connectToHost(dialog.hostId)
+                // @fernweh-broker-begin
+            RemoteBroker.connectToHost(dialog.hostId)
+// @fernweh-broker-end
                         }
                     }
                 }

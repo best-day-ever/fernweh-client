@@ -8,8 +8,10 @@ import ComputerManager 1.0
 import DisplaySetup 1.0
 import StreamingPreferences 1.0
 import SystemProperties 1.0
+// @fernweh-broker-begin
 import FernwehUpdater 1.0
 import RemoteBroker 1.0
+// @fernweh-broker-end
 
 ApplicationWindow {
     property alias pollingActive: hostPolling.pollingActive
@@ -36,6 +38,7 @@ ApplicationWindow {
         onActivated: window.openNewConnection()
     }
 
+// @fernweh-broker-begin
     Timer {
         interval: 6 * 60 * 60 * 1000
         running: FernwehUpdater.supported
@@ -43,6 +46,7 @@ ApplicationWindow {
         onTriggered: FernwehUpdater.check()
     }
 
+// @fernweh-broker-end
     id: window
     title: Qt.application.displayName
     width: 1280
@@ -62,6 +66,7 @@ ApplicationWindow {
     Component.onCompleted: {
         // The PLANK launcher is always a normal desktop window.
         window.show()
+// @fernweh-broker-begin
         FernwehUpdater.check()
 
         // A brand-new installation starts with the first sign-in wizard on
@@ -70,6 +75,7 @@ ApplicationWindow {
             stackView.push("qrc:/gui/OnboardingView.qml")
         }
 
+// @fernweh-broker-end
         // Display any modal dialogs for configuration warnings
         if (SystemProperties.isWow64) {
             wow64Dialog.open()
@@ -154,6 +160,7 @@ ApplicationWindow {
     }
 
     // Screens changed (dock, undock, a lid opened) while no stream runs.
+// @fernweh-broker-begin
     BrokerSessionBanner {
         z: 20
         message: RemoteBroker.sessionNotice
@@ -165,6 +172,7 @@ ApplicationWindow {
         onDismissed: RemoteBroker.dismissSessionNotice()
     }
 
+// @fernweh-broker-end
     Rectangle {
         id: displayBanner
         readonly property bool streaming: qmltypeof(stackView.currentItem, "StreamSegue")
@@ -317,6 +325,7 @@ ApplicationWindow {
                 verticalAlignment: Qt.AlignVCenter
             }
 
+// @fernweh-broker-begin
             Button {
                 visible: FernwehUpdater.available
                 enabled: !FernwehUpdater.busy
@@ -333,6 +342,7 @@ ApplicationWindow {
                 wrapMode: Text.WordWrap
             }
 
+// @fernweh-broker-end
             // This label will appear when the window gets too small and
             // we need to ensure the toolbar controls don't collide
             Label {
@@ -353,6 +363,7 @@ ApplicationWindow {
                 monitor: internetConnectivity
             }
 
+// @fernweh-broker-begin
             NavigableToolButton {
                 id: localButton
                 visible: qmltypeof(stackView.currentItem, "RemoteView")
@@ -389,6 +400,7 @@ ApplicationWindow {
                 }
             }
 
+// @fernweh-broker-end
             NavigableToolButton {
                 id: addPcButton
                 visible: qmltypeof(stackView.currentItem, "PcView")

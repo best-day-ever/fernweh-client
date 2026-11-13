@@ -3,7 +3,9 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.3
 
 import DisplaySetup 1.0
+// @fernweh-broker-begin
 import RemoteBroker 1.0
+// @fernweh-broker-end
 
 // Manual display setup for advanced users: exact sizes and positions (drag
 // with edge snapping), which workstation output backs each display, how the
@@ -233,6 +235,7 @@ ColumnLayout {
         onClicked: DisplaySetup.resetToProposal()
     }
 
+// @fernweh-broker-begin
     // ------------------------------------------------ older workstations
     ColumnLayout {
         id: fixed
@@ -334,4 +337,6 @@ ColumnLayout {
             }
         }
     }
+// @fernweh-broker-end
+
 }

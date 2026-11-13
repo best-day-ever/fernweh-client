@@ -138,6 +138,7 @@ void StreamingPreferences::reload()
                                                         static_cast<int>(recommendedFullScreenMode)).toInt());
     language = static_cast<Language>(settings.value(SER_LANGUAGE,
                                                     static_cast<int>(Language::LANG_AUTO)).toInt());
+#if FERNWEH_BROKER_ENABLED
     brokerHost = settings.value(SER_BROKER_HOST, PlankBroker::defaultHost()).toString().trimmed();
     if (brokerHost.isEmpty()) {
         brokerHost = PlankBroker::defaultHost();
@@ -155,6 +156,12 @@ void StreamingPreferences::reload()
     if (!PlankBroker::isPasskeyRpId(passkeyRpId)) {
         passkeyRpId = PlankBroker::defaultPasskeyRpId();
     }
+#else
+    brokerHost.clear();
+    brokerPort = PlankBroker::DefaultPort;
+    brokerPins.clear();
+    passkeyRpId.clear();
+#endif
 
 }
 
@@ -304,6 +311,7 @@ void StreamingPreferences::save()
     settings.setValue(SER_CAPTURESYSKEYS, captureSysKeysMode);
     settings.setValue(SER_IMMERSIVE_KEYBOARD, immersiveKeyboardMode);
     settings.setValue(SER_KEEPAWAKE, keepAwake);
+#if FERNWEH_BROKER_ENABLED
     settings.setValue(SER_BROKER_HOST, brokerHost.trimmed());
     settings.setValue(SER_BROKER_PORT, brokerPort);
     if (brokerPins == PlankBroker::defaultPins()) {
@@ -318,6 +326,7 @@ void StreamingPreferences::save()
     } else {
         settings.setValue(SER_PASSKEY_RP_ID, rpId);
     }
+#endif
 }
 
 QStringList StreamingPreferences::setBrokerPinsFromText(const QString& text)
