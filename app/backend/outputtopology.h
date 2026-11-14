@@ -164,6 +164,8 @@ struct NvOutputTopology
     int launchFeatureFlags(int discoveryFlags) const;
     // UI hint only: unknown=0, Linux=1, macOS=2. Never authorization.
     static int hostPlatform(int version, int featureFlags);
+    // Discovery hint only: unknown=-1, virtual-only=0, physical allowed=1.
+    static int hostDisplayPolicy(int version, const QString& policy);
     static bool fromJson(const QJsonObject& object, NvOutputTopology& topology,
                          QString* error = nullptr);
     // XRandR can briefly report no outputs while the host applies a mode.

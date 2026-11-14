@@ -405,6 +405,18 @@ HEADERS += \
     backend/systemproperties.h
 HEADERS += backend/clientdisplays.h
 
+# Native macOS playback/clock and display queries from current PLANK. The
+# Windows product retains its SDL platform adapter.
+macx {
+    SOURCES -= streaming/audio/renderers/sdlaud.cpp
+    HEADERS -= streaming/audio/renderers/sdl.h
+    OBJECTIVE_SOURCES += streaming/audio/macmicrophone.mm streaming/audio/renderers/coreaudio.mm streaming/audio/coreaudiodevice.mm streaming/macdisplays.mm
+    HEADERS += streaming/audio/renderers/coreaudio.h streaming/audio/coreaudiodevice.h streaming/audio/coreaudioplaybackstate.h streaming/macdisplays.h
+    PKGCONFIG += libswresample
+    LIBS += -framework AudioToolbox -framework CoreAudio
+}
+HEADERS += plankprofiles.h streaming/sessionlifecycle.h streaming/video/decodepacket.h streaming/video/decoderpolicy.h streaming/input/penmetrics.h streaming/input/linuxpenmetrics.h
+
 linux:contains(CONFIG, plank-qt-session) {
     SOURCES -= streaming/audio/renderers/sdlaud.cpp
     HEADERS -= streaming/audio/renderers/sdl.h
@@ -743,7 +755,7 @@ DEPENDPATH += $$PWD/../qmdnsengine/qmdnsengine/src/include $$PWD/../qmdnsengine
 
 win32:CONFIG(release, debug|release): LIBS += -L$$OUT_PWD/../h264bitstream/release/ -lh264bitstream
 else:win32:CONFIG(debug, debug|release): LIBS += -L$$OUT_PWD/../h264bitstream/debug/ -lh264bitstream
-else:unix: LIBS += -L$$OUT_PWD/../h264bitstream/ -lh264bitstream
+
 
 INCLUDEPATH += $$PWD/../h264bitstream
 DEPENDPATH += $$PWD/../h264bitstream

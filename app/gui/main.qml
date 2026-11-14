@@ -505,6 +505,8 @@ ApplicationWindow {
     NavigableDialog {
         id: addPcDialog
         title: qsTr("Add workstation bookmark")
+        modal: true
+        closePolicy: Popup.CloseOnEscape
         property var virtualModeChoices: ComputerManager.plankVirtualModeChoices()
 
         // Give both connection fields enough room for real hostnames while
@@ -570,7 +572,7 @@ ApplicationWindow {
             addressText.clear()
             nicknameText.clear()
             nicknameText.manuallyEdited = false
-            addHostLayout.currentIndex = 0
+            addHostLayout.selectLayout(0)
             addVirtualMode1.currentIndex = 9
             addVirtualMode2.currentIndex = 1
             addScalingChoice.currentIndex = 0
@@ -581,7 +583,7 @@ ApplicationWindow {
             if (addressText.text && nicknameText.text) {
                 ComputerManager.addNewHostManually(addressText.text.trim(),
                                                    nicknameText.text.trim(),
-                                                   addHostLayout.currentIndex,
+                                                   addHostLayout.layoutChoice,
                                                    addVirtualMode1.currentIndex,
                                                    addVirtualMode2.currentIndex,
                                                    addScalingChoice.currentIndex,
@@ -657,7 +659,7 @@ ApplicationWindow {
                 font.bold: true
             }
 
-            PlankComboBox {
+            PlankHostLayoutBox {
                 id: addHostLayout
                 Layout.fillWidth: true
                 model: addVideoSettings.captureSource === 2 ? [qsTr("Match client display(s)"), qsTr("One Mac virtual display")] : [
@@ -700,14 +702,14 @@ ApplicationWindow {
                 visible: addVideoSettings.captureSource !== 2
                 text: qsTr("Virtual display 2 resolution")
                 font.bold: true
-                opacity: addHostLayout.currentIndex === 3 ? 1.0 : 0.5
+                opacity: addHostLayout.layoutChoice === 3 ? 1.0 : 0.5
             }
 
             PlankComboBox {
                 id: addVirtualMode2
                 visible: addVideoSettings.captureSource !== 2
                 Layout.fillWidth: true
-                enabled: addHostLayout.currentIndex === 3
+                enabled: addHostLayout.layoutChoice === 3
                 currentIndex: 1
                 model: addPcDialog.virtualModeChoices
                 delegate: ItemDelegate {

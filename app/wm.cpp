@@ -1,9 +1,9 @@
 #include <QtGlobal>
-#include <QDir>
 
 #include "utils.h"
 
-#include <SDL3/SDL.h>
+#include <atomic>
+#include <cstring>
 
 #ifdef HAS_X11
 #include <X11/Xlib.h>
@@ -11,11 +11,6 @@
 
 #ifdef HAS_WAYLAND
 #include <wayland-client.h>
-#endif
-
-#ifdef HAVE_DRM
-#include <xf86drm.h>
-#include <xf86drmMode.h>
 #endif
 
 #ifdef HAVE_EGL
@@ -36,10 +31,10 @@
 bool WMUtils::isRunningX11()
 {
 #ifdef HAS_X11
-    static SDL_AtomicInt isRunningOnX11;
+    static std::atomic_int isRunningOnX11{0};
 
     // If the value is not set yet, populate it now.
-    int val = SDL_GetAtomicInt(&isRunningOnX11);
+    int val = isRunningOnX11.load();
     if (!(val & VALUE_SET)) {
         Display* display = XOpenDisplay(nullptr);
         if (display != nullptr) {
@@ -50,7 +45,7 @@ bool WMUtils::isRunningX11()
         // This can race with another thread populating the same data,
         // but that's no big deal.
         val = VALUE_SET | ((display != nullptr) ? VALUE_TRUE : 0);
-        SDL_SetAtomicInt(&isRunningOnX11, val);
+        isRunningOnX11.store(val);
     }
 
     return !!(val & VALUE_TRUE);
@@ -62,10 +57,10 @@ bool WMUtils::isRunningX11()
 bool WMUtils::isRunningNvidiaProprietaryDriverX11()
 {
 #ifdef HAVE_EGL
-    static SDL_AtomicInt isRunningOnNvidiaDriver;
+    static std::atomic_int isRunningOnNvidiaDriver{0};
 
     // If the value is not set yet, populate it now.
-    int val = SDL_GetAtomicInt(&isRunningOnNvidiaDriver);
+    int val = isRunningOnNvidiaDriver.load();
     if (!(val & VALUE_SET)) {
         bool nvidiaDriver = false;
 
@@ -83,7 +78,7 @@ bool WMUtils::isRunningNvidiaProprietaryDriverX11()
         // This can race with another thread populating the same data,
         // but that's no big deal.
         val = VALUE_SET | (nvidiaDriver ? VALUE_TRUE : 0);
-        SDL_SetAtomicInt(&isRunningOnNvidiaDriver, val);
+        isRunningOnNvidiaDriver.store(val);
     }
 
     return !!(val & VALUE_TRUE);
@@ -95,10 +90,10 @@ bool WMUtils::isRunningNvidiaProprietaryDriverX11()
 bool WMUtils::supportsDesktopGLWithEGL()
 {
 #ifdef HAVE_EGL
-    static SDL_AtomicInt supportsDesktopGL;
+    static std::atomic_int supportsDesktopGL{0};
 
     // If the value is not set yet, populate it now.
-    int val = SDL_GetAtomicInt(&supportsDesktopGL);
+    int val = supportsDesktopGL.load();
     if (!(val & VALUE_SET)) {
         // Assume it does if we can't confirm
         bool desktopGL = true;
@@ -127,7 +122,7 @@ bool WMUtils::supportsDesktopGLWithEGL()
         // This can race with another thread populating the same data,
         // but that's no big deal.
         val = VALUE_SET | (desktopGL ? VALUE_TRUE : 0);
-        SDL_SetAtomicInt(&supportsDesktopGL, val);
+        supportsDesktopGL.store(val);
     }
 
     return !!(val & VALUE_TRUE);
@@ -140,10 +135,10 @@ bool WMUtils::supportsDesktopGLWithEGL()
 bool WMUtils::isRunningWayland()
 {
 #ifdef HAS_WAYLAND
-    static SDL_AtomicInt isRunningOnWayland;
+    static std::atomic_int isRunningOnWayland{0};
 
     // If the value is not set yet, populate it now.
-    int val = SDL_GetAtomicInt(&isRunningOnWayland);
+    int val = isRunningOnWayland.load();
     if (!(val & VALUE_SET)) {
         struct wl_display* display = nullptr;
 
@@ -165,7 +160,7 @@ bool WMUtils::isRunningWayland()
         // This can race with another thread populating the same data,
         // but that's no big deal.
         val = VALUE_SET | ((display != nullptr) ? VALUE_TRUE : 0);
-        SDL_SetAtomicInt(&isRunningOnWayland, val);
+        isRunningOnWayland.store(val);
     }
 
     return !!(val & VALUE_TRUE);
@@ -195,68 +190,9 @@ bool WMUtils::isRunningDesktopEnvironment()
 #if defined(Q_OS_WIN) || defined(Q_OS_DARWIN)
     // Windows and macOS are always running a desktop environment
     return true;
-#elif defined(EMBEDDED_BUILD)
-    // Embedded systems don't run desktop environments
-    return false;
 #else
     // On non-embedded systems, assume we have a desktop environment
     // if we have a WM running.
     return isRunningWindowManager();
 #endif
-}
-
-bool WMUtils::isGpuSlow()
-{
-    bool ret;
-
-    if (!Utils::getEnvironmentVariableOverride("GL_IS_SLOW", &ret)) {
-#if defined(GL_IS_SLOW) || (!defined(Q_PROCESSOR_X86) && !defined(Q_OS_DARWIN) && !defined(Q_OS_WIN))
-        // We currently assume GPUs on non-x86 hardware are slow by default
-        ret = true;
-#else
-        ret = false;
-#endif
-    }
-
-    return ret;
-}
-
-QString WMUtils::getDrmCardOverride()
-{
-#ifdef HAVE_DRM
-    QDir dir("/dev/dri");
-    QStringList cardList = dir.entryList(QStringList("card*"), QDir::Files | QDir::System);
-    if (cardList.length() == 0) {
-        return QString();
-    }
-
-    bool needsOverride = false;
-    for (const QString& card : cardList) {
-        QFile cardFd(dir.filePath(card));
-        if (!cardFd.open(QFile::ReadOnly)) {
-            continue;
-        }
-
-        auto resources = drmModeGetResources(cardFd.handle());
-        if (resources == nullptr) {
-            // If we find a card that doesn't have a display before a card that
-            // has one, we'll need to override Qt's EGLFS config because they
-            // don't properly handle cards without displays.
-            needsOverride = true;
-        }
-        else {
-            // We found a card with a display
-            drmModeFreeResources(resources);
-            if (needsOverride) {
-                // Override the default card with this one
-                return dir.filePath(card);
-            }
-            else {
-                return QString();
-            }
-        }
-    }
-#endif
-
-    return QString();
 }

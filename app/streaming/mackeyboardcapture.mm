@@ -1,5 +1,7 @@
+#include <QDebug>
 #include "mackeyboardcapture.h"
-#include "input/sdl-darwin-scancodes.h"
+#include "qt/mackeymap.h"
+#include <iterator>
 
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
@@ -17,35 +19,35 @@ bool accessibilityPromptNeeded(bool captureEnabled, bool trusted, bool& prompted
 }
 
 struct Modifier {
-    SDL_Scancode scan;
-    SDL_Keymod mod;
+    std::uint32_t code;
+    std::uint16_t bit;
     CGEventFlags side;
     CGEventFlags otherSide;
     CGEventFlags either;
 };
 constexpr Modifier modifiers[] = {
-    {SDL_SCANCODE_LSHIFT, SDL_KMOD_LSHIFT, NX_DEVICELSHIFTKEYMASK, NX_DEVICERSHIFTKEYMASK, kCGEventFlagMaskShift},
-    {SDL_SCANCODE_RSHIFT, SDL_KMOD_RSHIFT, NX_DEVICERSHIFTKEYMASK, NX_DEVICELSHIFTKEYMASK, kCGEventFlagMaskShift},
-    {SDL_SCANCODE_LCTRL, SDL_KMOD_LCTRL, NX_DEVICELCTLKEYMASK, NX_DEVICERCTLKEYMASK, kCGEventFlagMaskControl},
-    {SDL_SCANCODE_RCTRL, SDL_KMOD_RCTRL, NX_DEVICERCTLKEYMASK, NX_DEVICELCTLKEYMASK, kCGEventFlagMaskControl},
-    {SDL_SCANCODE_LALT, SDL_KMOD_LALT, NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK, kCGEventFlagMaskAlternate},
-    {SDL_SCANCODE_RALT, SDL_KMOD_RALT, NX_DEVICERALTKEYMASK, NX_DEVICELALTKEYMASK, kCGEventFlagMaskAlternate},
-    {SDL_SCANCODE_LGUI, SDL_KMOD_LGUI, NX_DEVICELCMDKEYMASK, NX_DEVICERCMDKEYMASK, kCGEventFlagMaskCommand},
-    {SDL_SCANCODE_RGUI, SDL_KMOD_RGUI, NX_DEVICERCMDKEYMASK, NX_DEVICELCMDKEYMASK, kCGEventFlagMaskCommand},
+    {kVK_Shift, 1, NX_DEVICELSHIFTKEYMASK, NX_DEVICERSHIFTKEYMASK, kCGEventFlagMaskShift},
+    {kVK_RightShift, 2, NX_DEVICERSHIFTKEYMASK, NX_DEVICELSHIFTKEYMASK, kCGEventFlagMaskShift},
+    {kVK_Control, 4, NX_DEVICELCTLKEYMASK, NX_DEVICERCTLKEYMASK, kCGEventFlagMaskControl},
+    {kVK_RightControl, 8, NX_DEVICERCTLKEYMASK, NX_DEVICELCTLKEYMASK, kCGEventFlagMaskControl},
+    {kVK_Option, 16, NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK, kCGEventFlagMaskAlternate},
+    {kVK_RightOption, 32, NX_DEVICERALTKEYMASK, NX_DEVICELALTKEYMASK, kCGEventFlagMaskAlternate},
+    {kVK_Command, 64, NX_DEVICELCMDKEYMASK, NX_DEVICERCMDKEYMASK, kCGEventFlagMaskCommand},
+    {kVK_RightCommand, 128, NX_DEVICERCMDKEYMASK, NX_DEVICELCMDKEYMASK, kCGEventFlagMaskCommand},
 };
 
-SDL_Keymod sdlModifiersFromFlags(CGEventFlags flags)
+std::uint16_t modifiersFromFlags(CGEventFlags flags)
 {
-    SDL_Keymod result = SDL_KMOD_NONE;
-    for (unsigned i = 0; i < SDL_arraysize(modifiers); ++i) {
+    std::uint16_t result = 0;
+    for (unsigned i = 0; i < std::size(modifiers); ++i) {
         const auto& m = modifiers[i];
         // Synthetic/device-independent flags have no side bits. Pick the left
         // side once, not two presses for the same aggregate modifier.
         bool pressed = (flags & m.either) && ((flags & m.side) ||
             (!(i & 1) && !(flags & (m.side | m.otherSide))));
-        if (pressed) result |= m.mod;
+        if (pressed) result |= m.bit;
     }
-    if (flags & kCGEventFlagMaskAlphaShift) result |= SDL_KMOD_CAPS;
+    if (flags & kCGEventFlagMaskAlphaShift) result |= 256;
     return result;
 }
 }
@@ -54,20 +56,13 @@ struct MacKeyboardCapture::State
 {
     std::function<bool()> ownsKeyboard;
     std::function<void()> releaseKeys;
-    std::function<bool(const SDL_KeyboardEvent&)> sessionHotkey;
     std::function<bool()> queueWake;
     std::function<bool()> isTrusted = [] { return AXIsProcessTrusted(); };
     CFMachPortRef tap = nullptr;
     CFRunLoopSourceRef source = nullptr;
     CFRunLoopTimerRef timer = nullptr;
-    // Session has longstanding events at SDL_EVENT_USER itself. Reserve that
-    // value if it is still available and always use a distinct registered ID.
-    const Uint32 eventType = [] {
-        const Uint32 base = SDL_RegisterEvents(2);
-        return base ? base + 1 : 0;
-    }();
-    std::deque<SDL_KeyboardEvent> pending;
-    SDL_Keymod lastModifiers = SDL_KMOD_NONE;
+    std::deque<MacKeyEvent> pending;
+    std::uint16_t lastModifiers = 0;
     bool active = false;
     bool dispatching = false;
     bool warned = false;
@@ -79,13 +74,12 @@ struct MacKeyboardCapture::State
     {
         // Stop forwarding, not the session's native event source. A disabled
         // tap cannot see the first key after a Spaces transition, leaving
-        // recovery dependent on queued SDL focus events or the polling timer.
+        // recovery dependent on queued Qt focus events or the polling timer.
         // handle() passes every background event through unchanged.
         const bool wasActive = std::exchange(active, false);
         pending.clear();
         wakeQueued = false;
-        if (eventType != 0) SDL_FlushEvent(eventType);
-        lastModifiers = SDL_KMOD_NONE;
+        lastModifiers = 0;
         if (wasActive) releaseKeys();
     }
 
@@ -108,51 +102,42 @@ struct MacKeyboardCapture::State
     void activate()
     {
         releaseKeys();
-        lastModifiers = SDL_KMOD_NONE;
+        lastModifiers = 0;
         active = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_INPUT, "macOS system shortcut capture enabled");
+        qInfo("macOS system shortcut capture enabled");
     }
 
-    bool enqueue(SDL_Scancode scan, bool down, SDL_Keymod mods, Uint32 raw = 0)
+    bool enqueue(std::uint32_t code, bool down, std::uint16_t mods)
     {
         if (pending.size() == QueueLimit) return false;
         if (!wakeQueued) {
-            if (queueWake) {
-                if (!queueWake()) return false;
-            } else {
-                SDL_Event wake {};
-                wake.type = eventType;
-                if (!eventType || !SDL_PushEvent(&wake)) return false;
-            }
+            if (!queueWake || !queueWake()) return false;
             wakeQueued = true;
         }
-        SDL_KeyboardEvent key {};
-        key.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
-        key.timestamp = SDL_GetTicksNS();
-        key.down = down;
-        key.scancode = scan;
-        key.raw = raw;
-        key.mod = mods;
-        key.key = SDL_GetKeyFromScancode(scan, mods, true);
-        pending.push_back(key);
+        Qt::KeyboardModifiers qtMods;
+        if (mods & 3) qtMods |= Qt::ShiftModifier;
+        if (mods & 12) qtMods |= Qt::ControlModifier;
+        if (mods & 48) qtMods |= Qt::AltModifier;
+        if (mods & 192) qtMods |= Qt::MetaModifier;
+        pending.push_back({code, down, qtMods});
         return true;
     }
 
     bool queueKey(CGEventType type, CGEventRef event)
     {
-        const auto mods = sdlModifiersFromFlags(CGEventGetFlags(event));
+        const auto mods = modifiersFromFlags(CGEventGetFlags(event));
         // Reconcile modifiers before every key, including keys held before
-        // focus was gained. No parallel SDL/native path forwards the same key.
+        // focus was gained. No parallel Qt/native path forwards the same key.
         for (const auto& m : modifiers) {
-            if ((mods & m.mod) != (lastModifiers & m.mod) &&
-                !enqueue(m.scan, (mods & m.mod) != 0, mods)) return false;
+            if ((mods & m.bit) != (lastModifiers & m.bit) &&
+                !enqueue(m.code, (mods & m.bit) != 0, mods)) return false;
         }
-        const bool capsChanged = (mods & SDL_KMOD_CAPS) != (lastModifiers & SDL_KMOD_CAPS);
+        const bool capsChanged = (mods & 256) != (lastModifiers & 256);
         lastModifiers = mods;
         if (type == kCGEventFlagsChanged) {
             if (CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) == kVK_CapsLock && capsChanged)
-                return enqueue(SDL_SCANCODE_CAPSLOCK, true, mods) &&
-                       enqueue(SDL_SCANCODE_CAPSLOCK, false, mods);
+                return enqueue(kVK_CapsLock, true, mods) &&
+                       enqueue(kVK_CapsLock, false, mods);
             return true;
         }
         // The Host owns key repeat. Do not fill the local queue with repeats.
@@ -161,9 +146,8 @@ struct MacKeyboardCapture::State
         const auto raw = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
         auto code = raw;
         if (isoKeyboard && (code == 10 || code == 50)) code = 60 - code;
-        if (code < 0 || static_cast<uint64_t>(code) >= SDL_arraysize(darwin_scancode_table) ||
-            darwin_scancode_table[code] == SDL_SCANCODE_UNKNOWN) return false;
-        return enqueue(darwin_scancode_table[code], type == kCGEventKeyDown, mods, raw);
+        if (code < 0 || code >= 128 || !qtMacRemoteKey(static_cast<std::uint32_t>(code)).vk) return false;
+        return enqueue(static_cast<std::uint32_t>(code), type == kCGEventKeyDown, mods);
     }
 
     CGEventRef handle(CGEventType type, CGEventRef event)
@@ -172,7 +156,7 @@ struct MacKeyboardCapture::State
             // Drop pending input and release the remote keyboard before the
             // timer rechecks permission/focus and attempts recovery.
             deactivate();
-            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "macOS shortcut capture interrupted; remote keys released");
+            qWarning("macOS shortcut capture interrupted; remote keys released");
             return event;
         }
         if (!ownsKeyboard()) {
@@ -195,40 +179,15 @@ struct MacKeyboardCapture::State
         if (raw == kVK_Function || raw == kVK_VolumeUp || raw == kVK_VolumeDown || raw == kVK_Mute)
             return event;
         // Native focus and the user's capture policy are authoritative. Resume
-        // on the first returned key, even without an SDL focus notification or
+        // on the first returned key, even without a Qt focus notification or
         // a timer tick. Permission revocation must never re-arm forwarding.
         if (!active) {
             if (!isTrusted()) return event;
             activate();
         }
-        // An emergency control must not wait behind (or fail because of) a
-        // full native/SDL remote-input queue. Only latch local session state;
-        // teardown and toolbar rendering stay in the normal session loop.
-        auto code = raw;
-        if (isoKeyboard && (code == 10 || code == 50)) code = 60 - code;
-        if (sessionHotkey && type != kCGEventFlagsChanged && code >= 0 &&
-                static_cast<uint64_t>(code) < SDL_arraysize(darwin_scancode_table)) {
-            SDL_KeyboardEvent key {};
-            key.type = type == kCGEventKeyDown ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
-            key.down = type == kCGEventKeyDown;
-            key.scancode = darwin_scancode_table[code];
-            key.mod = sdlModifiersFromFlags(flags);
-            key.key = SDL_GetKeyFromScancode(key.scancode, key.mod, true);
-            key.repeat = key.down && CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat);
-            if (sessionHotkey(key)) {
-                if (key.down && !key.repeat) {
-                    pending.clear();
-                    wakeQueued = false;
-                    if (eventType) SDL_FlushEvent(eventType);
-                    lastModifiers = SDL_KMOD_NONE;
-                    releaseKeys();
-                }
-                return nullptr;
-            }
-        }
         if (!queueKey(type, event)) {
             deactivate();
-            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "Unable to queue macOS shortcut; capture released");
+            qWarning("Unable to queue macOS shortcut; capture released");
             return event;
         }
         return nullptr; // The existing PLANK input path, never the local OS.
@@ -249,8 +208,7 @@ struct MacKeyboardCapture::State
             // Permission UI belongs to the launcher/settings, never a stream
             // whose pointer capture could make the system dialog inaccessible.
             if (!warned) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                    "System shortcut capture needs PLANK Client Accessibility permission in System Settings > Privacy & Security. Local OS shortcuts remain active until approved.");
+                qWarning("System shortcut capture needs PLANK Client Accessibility permission in System Settings > Privacy & Security. Local OS shortcuts remain active until approved.");
                 warned = true;
             }
             return;
@@ -259,7 +217,7 @@ struct MacKeyboardCapture::State
             removeTap();
         }
         if (active && tap && !CGEventTapIsEnabled(tap)) deactivate();
-        if (!tap && eventType) {
+        if (!tap) {
             const CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) |
                 CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventFlagsChanged);
             tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap,
@@ -271,7 +229,7 @@ struct MacKeyboardCapture::State
             }
         }
         if (!tap) {
-            if (!warned) SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "macOS system shortcut capture is unavailable");
+            if (!warned) qWarning("macOS system shortcut capture is unavailable");
             warned = true;
             return;
         }
@@ -279,7 +237,7 @@ struct MacKeyboardCapture::State
             CGEventTapEnable(tap, true);
             if (!CGEventTapIsEnabled(tap)) {
                 removeTap();
-                if (!warned) SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "macOS system shortcut capture could not be enabled");
+                if (!warned) qWarning("macOS system shortcut capture could not be enabled");
                 warned = true;
                 return;
             }
@@ -331,21 +289,6 @@ void MacKeyboardCapture::refresh()
     m_State->refresh();
 }
 
-void MacKeyboardCapture::setSessionHotkeyHandler(
-        std::function<bool(const SDL_KeyboardEvent&)> handler)
-{
-    NSCAssert(NSThread.isMainThread, @"Keyboard capture is main-thread only");
-    m_State->sessionHotkey = std::move(handler);
-}
-
-bool MacKeyboardCapture::dispatch(const SDL_Event& event,
-                                 const std::function<void(SDL_KeyboardEvent*)>& deliver)
-{
-    if (!m_State->eventType || event.type != m_State->eventType) return false;
-    dispatchPending(deliver);
-    return true;
-}
-
 void MacKeyboardCapture::setQueueWake(std::function<bool()> wake)
 {
     NSCAssert(NSThread.isMainThread, @"Keyboard capture is main-thread only");
@@ -353,7 +296,7 @@ void MacKeyboardCapture::setQueueWake(std::function<bool()> wake)
     m_State->queueWake = std::move(wake);
 }
 
-void MacKeyboardCapture::dispatchPending(const std::function<void(SDL_KeyboardEvent*)>& deliver)
+void MacKeyboardCapture::dispatchPending(const std::function<void(const MacKeyEvent&)>& deliver)
 {
     NSCAssert(NSThread.isMainThread, @"Keyboard capture is main-thread only");
     m_State->wakeQueued = false;
@@ -362,14 +305,26 @@ void MacKeyboardCapture::dispatchPending(const std::function<void(SDL_KeyboardEv
         auto key = m_State->pending.front();
         m_State->pending.pop_front();
         m_State->dispatching = true;
-        deliver(&key);
+        deliver(key);
         m_State->dispatching = false;
     }
 }
 
-bool MacKeyboardCapture::suppressSdlKeyEvent() const
+bool MacKeyboardCapture::capturesKeys() const
 {
     // The tap has already queued this input. Also exclude native key events
-    // still in SDL's queue when capture began. Explicit menu/Dock Quit is not a key.
+    // still in the GUI queue when capture began. Explicit menu/Dock Quit is not a key.
     return m_State->active && !m_State->dispatching;
 }
+
+// Compatibility entry points for the retained SDL frontend. Qt sessions drain
+// the same queue directly and never create an SDL event pump.
+void MacKeyboardCapture::setSessionHotkeyHandler(std::function<bool(const SDL_KeyboardEvent&)> handler)
+{
+    Q_UNUSED(handler);
+}
+bool MacKeyboardCapture::dispatch(const SDL_Event&, const std::function<void(SDL_KeyboardEvent*)>&)
+{
+    return false;
+}
+bool MacKeyboardCapture::suppressSdlKeyEvent() const { return capturesKeys(); }

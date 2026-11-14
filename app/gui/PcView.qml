@@ -31,6 +31,7 @@ CenteredGridView {
         // We do this here instead of onActivated to avoid losing the user's
         // selection when backing out of a different page of the app.
         currentIndex = -1
+        console.info("PLANK bookmark page ready")
     }
 
     // Note: Any initialization done here that is critical for streaming must
@@ -541,14 +542,14 @@ CenteredGridView {
                                                     editAddressText.text.trim(),
                                                     editNicknameText.text.trim(),
                                                     editScalingChoice.currentIndex,
-                                                    editHostLayout.currentIndex,
+                                                    editHostLayout.layoutChoice,
                                                     editVirtualMode1.currentIndex,
                                                     editVirtualMode2.currentIndex,
                                                     editVideoSettings.videoProfile,
                                                     editVideoSettings.captureSource,
                                                     editVideoSettings.officeBitratesKbps,
                                                     editClientDisplays.selection)) {
-                errorDialog.text = qsTr("Unable to update the workstation bookmark. Check the address and ensure another bookmark is not already using it.")
+                errorDialog.text = qsTr("Unable to update the workstation bookmark. Check the address and selected settings.")
                 errorDialog.open()
             }
         }
@@ -589,7 +590,7 @@ CenteredGridView {
                 text: qsTr("Host display layout")
                 font.bold: true
             }
-            PlankComboBox {
+            PlankHostLayoutBox {
                 id: editHostLayout
                 Layout.fillWidth: true
                 model: editVideoSettings.captureSource === 2 ? [qsTr("Match client display(s)"), qsTr("One Mac virtual display")] : [
@@ -638,13 +639,13 @@ CenteredGridView {
                 visible: editVideoSettings.captureSource !== 2
                 text: qsTr("Virtual display 2 resolution")
                 font.bold: true
-                opacity: editHostLayout.currentIndex === 3 ? 1.0 : 0.5
+                opacity: editHostLayout.layoutChoice === 3 ? 1.0 : 0.5
             }
             PlankComboBox {
                 id: editVirtualMode2
                 visible: editVideoSettings.captureSource !== 2
                 Layout.fillWidth: true
-                enabled: editHostLayout.currentIndex === 3
+                enabled: editHostLayout.layoutChoice === 3
                 model: editBookmarkDialog.virtualModeChoices
                 delegate: ItemDelegate {
                     width: editVirtualMode2.width

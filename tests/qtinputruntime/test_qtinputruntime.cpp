@@ -110,14 +110,19 @@ void MacQuitShortcut::refresh() {}
 
 PlankWacomTransportDecision plankWacomTransportForConnectedDevice()
 { return {normalized ? PlankWacomTransport::NormalizedPen : PlankWacomTransport::ExactRawHid, 0, 0}; }
-LinuxRawWacomInput::LinuxRawWacomInput(std::function<void()> activity)
+// These link-time doubles never create evdev nodes. Complete the opaque type
+// so the fake destructor can destroy its always-empty observer container.
+struct LinuxRawWacomInput::PenNode {};
+LinuxRawWacomInput::LinuxRawWacomInput(std::function<void()> activity, PlankPenObserver observer)
+    : m_PenObserver(std::move(observer))
 { registerTabletActivity(std::move(activity)); tabletCall("raw-create"); }
 LinuxRawWacomInput::~LinuxRawWacomInput() { registerTabletActivity({}); tabletCall("raw-destroy"); }
 void LinuxRawWacomInput::setActive(bool active) { tabletCall(active ? "raw-active" : "raw-inactive"); }
 void LinuxRawWacomInput::beginReconnect() { tabletCall("raw-suspend"); }
 void LinuxRawWacomInput::finishReconnect() { tabletCall("raw-resume"); }
 void LinuxRawWacomInput::handleControl(const unsigned char*, unsigned int) {}
-LinuxWacomInput::LinuxWacomInput(std::function<void()> activity)
+LinuxWacomInput::LinuxWacomInput(std::function<void()> activity, PlankPenObserver observer)
+    : m_PenObserver(std::move(observer))
 { registerTabletActivity(std::move(activity)); tabletCall("pen-create"); }
 LinuxWacomInput::~LinuxWacomInput() { registerTabletActivity({}); tabletCall("pen-destroy"); }
 void LinuxWacomInput::setActive(bool active) { tabletCall(active ? "pen-active" : "pen-inactive"); }

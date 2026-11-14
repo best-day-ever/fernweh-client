@@ -1,8 +1,9 @@
+#include <QDebug>
 #include "linuxrawwacom.h"
+#include "linuxpenmetrics.h"
 
 #include <Limelight.h>
 #include <plank.h>
-#include <SDL3/SDL.h>
 #include <QtEndian>
 #include <libudev.h>
 
@@ -213,7 +214,13 @@ PlankWacomTransportDecision plankWacomTransportForConnectedDevice()
     return connectedWacomTransportDecision();
 }
 
-LinuxRawWacomInput::LinuxRawWacomInput(std::function<void()> tabletActivity)
+struct LinuxRawWacomInput::PenNode {
+    int fd;
+    LinuxPenActivityTracker tracker;
+    bool failed = false;
+};
+
+LinuxRawWacomInput::LinuxRawWacomInput(std::function<void()> tabletActivity, PlankPenObserver penObserver)
     : m_Active(false),
       m_Stopping(false),
       m_Reconnecting(false),
@@ -222,7 +229,8 @@ LinuxRawWacomInput::LinuxRawWacomInput(std::function<void()> tabletActivity)
       m_InputSequence(0),
       m_AttachPending(false),
       m_Attached(false),
-      m_TabletActivity(std::move(tabletActivity))
+      m_TabletActivity(std::move(tabletActivity)),
+      m_PenObserver(std::move(penObserver))
 {
     m_Thread = std::thread(&LinuxRawWacomInput::run, this);
 }
@@ -292,8 +300,7 @@ void LinuxRawWacomInput::waitForWork(std::chrono::milliseconds delay)
 
 void LinuxRawWacomInput::run()
 {
-    SDL_LogInfo(SDL_LOG_CATEGORY_INPUT,
-                "PLANK exact raw Wacom capture initialized");
+    qInfo("PLANK exact raw Wacom capture initialized");
     while (!m_Stopping.load()) {
         std::deque<std::vector<unsigned char>> controls;
         {
@@ -306,7 +313,7 @@ void LinuxRawWacomInput::run()
                 lock.unlock();
                 suspendForwarding();
                 if (overflow) {
-                    SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "Wacom control queue full; restarting attachment");
+                    qWarning("Wacom control queue full; restarting attachment");
                     m_AttachFailed.store(true);
                 }
                 lock.lock();
@@ -342,8 +349,7 @@ void LinuxRawWacomInput::run()
             }
             if (m_AttachPending &&
                     std::chrono::steady_clock::now() >= m_AttachDeadline) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                            "Timed out waiting for exact Wacom host attachment; retrying");
+                qWarning("Timed out waiting for exact Wacom host attachment; retrying");
                 suspendForwarding();
                 delayRetry = true;
             }
@@ -352,8 +358,7 @@ void LinuxRawWacomInput::run()
                     delayRetry = true;
                 }
                 else if (!discover() || !sendAttach()) {
-                    SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                                "Unable to attach exact Wacom device; will retry after checking hidraw and input permissions");
+                    qWarning("Unable to attach exact Wacom device; will retry after checking hidraw and input permissions");
                     release();
                     m_AttachFailed.store(true);
                 }
@@ -518,6 +523,7 @@ bool LinuxRawWacomInput::discover()
                 if (ioctl(fd, EVIOCGBIT(EV_KEY, keys.size()), keys.data()) >= 0 &&
                         (keys[BTN_TOOL_PEN / 8] & (1u << (BTN_TOOL_PEN % 8)))) {
                     penReady = true;
+                    if (m_PenObserver) m_PenNodes.push_back(std::make_unique<PenNode>(PenNode {fd, {}, false}));
                 }
             } else {
                 allEventsOpened = false;
@@ -582,8 +588,7 @@ bool LinuxRawWacomInput::sendAttach()
     m_AttachPending = true;
     m_AttachDeadline = std::chrono::steady_clock::now() +
             std::chrono::seconds(15);
-    SDL_LogInfo(SDL_LOG_CATEGORY_INPUT,
-                "Sent exact Wacom attach: %u interfaces, generation %u",
+    qInfo("Sent exact Wacom attach: %u interfaces, generation %u",
                 static_cast<unsigned int>(m_Interfaces.size()),
                 static_cast<unsigned int>(m_Generation));
     return true;
@@ -630,8 +635,7 @@ void LinuxRawWacomInput::handlePhysicalReports()
     const int result = poll(pollFds.data(), pollFds.size(), 10);
     if (result < 0) {
         if (errno != EINTR) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                        "Wacom USB polling failed: %s; preserving host tablet during recovery",
+            qWarning("Wacom USB polling failed: %s; preserving host tablet during recovery",
                         std::strerror(errno));
             suspendForwarding();
             m_AttachFailed.store(false);
@@ -642,8 +646,7 @@ void LinuxRawWacomInput::handlePhysicalReports()
     std::array<unsigned char, PLANK_RAW_HID_MAX_REPORT_SIZE> report = {};
     for (std::size_t index = 0; index < pollFds.size(); ++index) {
         if ((pollFds[index].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                        "Wacom USB interface became unavailable; preserving host tablet during recovery");
+            qWarning("Wacom USB interface became unavailable; preserving host tablet during recovery");
             suspendForwarding();
             m_AttachFailed.store(false);
             return;
@@ -659,8 +662,7 @@ void LinuxRawWacomInput::handlePhysicalReports()
             if (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
             if (bytes < 0 && errno == EINTR) continue;
             if (bytes <= 0) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                            "Wacom USB read ended: %s; preserving host tablet during recovery",
+                qWarning("Wacom USB read ended: %s; preserving host tablet during recovery",
                             bytes == 0 ? "device closed" : std::strerror(errno));
                 suspendForwarding();
                 return;
@@ -674,6 +676,49 @@ void LinuxRawWacomInput::handlePhysicalReports()
             if (m_TabletActivity) m_TabletActivity();
         }
     }
+    observePenEvents();
+}
+
+void LinuxRawWacomInput::observePenEvents()
+{
+    if (!m_PenObserver || !m_Active.load() || m_Reconnecting.load() || !m_Attached) return;
+    PlankPenActivity total;
+    for (auto& node : m_PenNodes) {
+        if (node->failed) continue;
+        // Bound optional observation work. Never delay the raw report sender
+        // to catch up with a metrics backlog; discard it and rebase instead.
+        std::array<input_event, 64> events {};
+        for (unsigned batch = 0; batch < 8; ++batch) {
+            const auto bytes = read(node->fd, events.data(), sizeof(events));
+            if (bytes < 0 && errno == EINTR) continue;
+            if (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                if (!node->tracker.ready()) {
+                    input_absinfo x {}, y {};
+                    std::array<unsigned char, (KEY_MAX + 8) / 8> keys {};
+                    if (ioctl(node->fd, EVIOCGABS(ABS_X), &x) >= 0 &&
+                        ioctl(node->fd, EVIOCGABS(ABS_Y), &y) >= 0 &&
+                        ioctl(node->fd, EVIOCGKEY(keys.size()), keys.data()) >= 0) {
+                        const auto pressed = [&](unsigned code) { return keys[code / 8] & (1u << (code % 8)); };
+                        node->tracker.prime(x.value, y.value, pressed(BTN_TOOL_PEN), pressed(BTN_TOOL_RUBBER), pressed(BTN_TOUCH));
+                    }
+                }
+                break;
+            }
+            if (bytes <= 0 || bytes % sizeof(input_event) != 0) {
+                node->failed = true;
+                node->tracker.reset();
+                break; // Metrics failure never changes tablet forwarding.
+            }
+            for (std::size_t n = 0; n < std::size_t(bytes) / sizeof(input_event); ++n) {
+                const auto sample = node->tracker.consume(events[n]);
+                total.motion += sample.motion;
+                total.tipDown += sample.tipDown;
+            }
+            if (batch == 7) node->tracker.reset();
+        }
+        total.observed = total.observed || node->tracker.ready();
+    }
+    m_PenObserver(total);
 }
 
 void LinuxRawWacomInput::handleControl(const unsigned char* data,
@@ -725,12 +770,10 @@ void LinuxRawWacomInput::processControl(const unsigned char* data,
         m_AttachPending = false;
         if (result == 0 && setGrabbed(true)) {
             m_Attached = true;
-            SDL_LogInfo(SDL_LOG_CATEGORY_INPUT,
-                        "Exact Wacom device attached to host");
+            qInfo("Exact Wacom device attached to host");
         }
         else {
-            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                        "Host rejected exact Wacom attach: %s",
+            qWarning("Host rejected exact Wacom attach: %s",
                         std::strerror(result));
             if (result == 0) sendFrame(PLANK_RAW_HID_SUSPEND, 0, 0, nullptr, 0);
             suspendForwarding();
@@ -801,13 +844,13 @@ void LinuxRawWacomInput::queueReport(std::uint16_t type,
 
 bool LinuxRawWacomInput::setGrabbed(bool grabbed)
 {
+    for (auto& node : m_PenNodes) node->tracker.reset();
     const int value = grabbed ? 1 : 0;
     bool success = true;
     for (int fd : m_EventFds) {
         if (ioctl(fd, EVIOCGRAB, value) < 0) {
             success = false;
-            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                        "Unable to %s Wacom event node: %s",
+            qWarning("Unable to %s Wacom event node: %s",
                         grabbed ? "grab" : "release", std::strerror(errno));
         }
     }
@@ -822,12 +865,10 @@ void LinuxRawWacomInput::suspendForwarding()
 {
     if (m_AttachPending || m_Attached) {
         if (sendFrame(PLANK_RAW_HID_SUSPEND, 0, 0, nullptr, 0)) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_INPUT,
-                        "Suspended exact Wacom forwarding while preserving host endpoints");
+            qInfo("Suspended exact Wacom forwarding while preserving host endpoints");
         }
         else {
-            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                        "Unable to suspend exact Wacom forwarding cleanly");
+            qWarning("Unable to suspend exact Wacom forwarding cleanly");
         }
     }
     release();
@@ -835,6 +876,8 @@ void LinuxRawWacomInput::suspendForwarding()
 
 void LinuxRawWacomInput::release()
 {
+    if (m_PenObserver) m_PenObserver({});
+    m_PenNodes.clear();
     m_ReportWorker.invalidate();
     if (m_Attached) {
         setGrabbed(false);

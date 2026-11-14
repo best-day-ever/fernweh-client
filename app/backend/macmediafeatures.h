@@ -1,8 +1,8 @@
 #pragma once
 
 #include "outputtopology.h"
+#include "../plankprofiles.h"
 #include <QJsonArray>
-#include <QRegularExpression>
 #include <QStringList>
 
 // Each media feature owns its version and configuration. This envelope stays
@@ -21,8 +21,9 @@ inline bool cameraSupported()
 }
 inline bool encodingSupported(const QString& mode)
 {
-    return mode == QLatin1String("hevc-10-420-videotoolbox") ||
-           mode == QLatin1String("hevc-10-444-videotoolbox");
+    const auto bytes = mode.toUtf8();
+    const auto* profile = plank_encoding_profile_named(bytes.constData(), bytes.size());
+    return profile && profile->encoder == PLANK_ENCODER_APPLE;
 }
 inline QJsonObject profile(const QString& name, const QString& mode)
 {
@@ -113,29 +114,5 @@ inline bool select(const QJsonObject& response, const QString& mode, Agreement& 
     }
     result = {7, mode, selected, response.value("required_features").toArray()};
     return true;
-}
-inline Agreement legacy(int schema, const QString& mode)
-{
-    if (schema < 4 || schema > 6 || !encodingSupported(mode)) return {};
-    Agreement result {schema, mode, {}};
-    for (const auto& name : names()) {
-        const bool enabled = (name != QLatin1String("clipboard") || NvOutputTopology::PlatformClipboardSyncFeature) &&
-            (name != QLatin1String("microphone") || schema >= 5) &&
-            (name != QLatin1String("camera") || (schema >= 6 && cameraSupported()));
-        result.features.insert(name, enabled ? QJsonValue(profile(name, mode)) : QJsonValue(QJsonValue::Null));
-    }
-    return result;
-}
-// Only pinned server information and an explicit missing negotiation endpoint
-// permit this finite bridge. Unknown releases never trigger launch retries.
-inline int legacySchema(const QString& version)
-{
-    static const QRegularExpression known(QStringLiteral("^(1\\.0\\.(156|157)|1\\.1\\.(001|002|003))(?:-[a-z0-9][a-z0-9-]*)?$"));
-    const auto match = known.match(version);
-    if (!match.hasMatch()) return 0;
-    const auto base = match.captured(1);
-    if (base == QLatin1String("1.1.003")) return 6;
-    if (base == QLatin1String("1.1.002")) return 5;
-    return 4;
 }
 } // namespace MacMediaFeatures

@@ -1,3 +1,4 @@
+#include "sessionlifecycle.h"
 #pragma once
 
 #include <QJsonObject>
@@ -44,6 +45,8 @@ class WindowsFileClipboard;
 #if defined(Q_OS_MACOS) && defined(PLANK_TRANSPORT)
 class MacFileClipboard;
 #endif
+struct PlankMetricsHandle;
+struct PlankPenActivity;
 class QtSessionRuntime;
 class QtSessionInput;
 #ifdef PLANK_TRANSPORT
@@ -113,10 +116,6 @@ public:
             {SCM_HEVC_MAIN10, VIDEO_FORMAT_H265_MAIN10},
             {SCM_HEVC_REXT8_444, VIDEO_FORMAT_H265_REXT8_444},
             {SCM_HEVC_REXT10_444, VIDEO_FORMAT_H265_REXT10_444},
-            {SCM_AV1_MAIN8, VIDEO_FORMAT_AV1_MAIN8},
-            {SCM_AV1_MAIN10, VIDEO_FORMAT_AV1_MAIN10},
-            {SCM_AV1_HIGH8_444, VIDEO_FORMAT_AV1_HIGH8_444},
-            {SCM_AV1_HIGH10_444, VIDEO_FORMAT_AV1_HIGH10_444},
         };
 
         for (QMap<int, int>::const_iterator it = mapping.cbegin(); it != mapping.cend(); ++it) {
@@ -155,6 +154,9 @@ public:
     virtual ~Session();
 
     Q_INVOKABLE void exec(QWindow* qtWindow);
+    void publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder);
+    void publishPenMetrics(const PlankPenActivity& activity);
+    static QString decoderFailureMessage(int videoFormat);
 
     // Remote (broker) mode: obtains a fresh one-use host admission from the
     // broker (a new POST /v1/hosts/{id}/connect), updates this computer's
@@ -365,11 +367,11 @@ private:
 #endif
 #endif
 
-    bool validateLaunch(SDL_Window* testWindow);
+    bool validateLaunch();
 
     void emitLaunchWarning(QString text);
 
-    bool populateDecoderProperties(SDL_Window* window);
+    bool populateDecoderProperties();
 
     IAudioRenderer* createAudioRenderer(const POPUS_MULTISTREAM_CONFIGURATION opusConfig);
 
@@ -446,13 +448,11 @@ private:
         Hardware
     };
 
-    DecoderAvailability getDecoderAvailability(SDL_Window* window,
-                                               int videoFormat, int width, int height, int frameRate,
+    DecoderAvailability getDecoderAvailability(int videoFormat, int width, int height, int frameRate,
                                                bool enableIdentityGbr = false);
 
     static
-    bool chooseDecoder(DecoderSelectionMode selectionMode,
-                       SDL_Window* window, int videoFormat, int width, int height,
+    bool chooseDecoder(int videoFormat, int width, int height,
                        int frameRate, bool enableVsync, bool testOnly,
                        IVideoDecoder*& chosenDecoder,
                        bool enableIdentityGbr = false,
@@ -519,6 +519,9 @@ private:
     static
     int drSubmitDecodeUnit(PDECODE_UNIT du);
 
+    PlankSessionLifecycle m_Lifecycle;
+    std::mutex m_MetricsMutex;
+    PlankMetricsHandle* m_MetricsHandle = nullptr;
     StreamingPreferences* m_Preferences;
     bool m_IsFullScreen;
     SupportedVideoFormatList m_SupportedVideoFormats; // Sorted in order of descending priority
@@ -556,18 +559,18 @@ private:
     int m_PlankBitrateKbps;
     ComputerManager* m_ComputerManager;
     NvApp m_App;
-    SDL_Window* m_Window;
+    SDL_Window* m_Window = nullptr;
     IVideoDecoder* m_VideoDecoder;
     // Immutable during one active runtime, owned until all decoder workers exit.
     IFFmpegRendererFactory* m_RendererFactory = nullptr;
-    SDL_SpinLock m_DecoderLock;
+    std::mutex m_DecoderLock;
     bool m_AudioDisabled;
     bool m_AudioMuted;
     Uint32 m_FullScreenFlag;
-    QWindow* m_QtWindow;
+    QWindow* m_QtWindow = nullptr;
     bool m_ThreadedExec;
     bool m_UnexpectedTermination;
-    std::atomic_bool m_ReconnectRequested;
+    std::atomic_bool m_ReconnectRequested{false};
     std::atomic<Uint64> m_DesktopHandoffNoticeDeadline {0};
     std::atomic<Uint64> m_DesktopHandoffRetryDeadline {0};
     std::atomic_bool m_AuthenticatedGreeter {false};
@@ -575,11 +578,11 @@ private:
     std::atomic<Uint64> m_LastPlankVideoReceived {0};
     QString m_PlankWorkerInstance;
     QString m_PlankHostCertificateSha256;
-    std::atomic_bool m_Reconnecting;
-    std::atomic_bool m_ReconnectCancelled;
+    std::atomic_bool m_Reconnecting{false};
+    std::atomic_bool m_ReconnectCancelled{false};
     PlankReconnectPolicy m_ReconnectPolicy;
     std::atomic_bool m_CanReconnect;
-    std::atomic_bool m_ConnectionStartCancelled;
+    std::atomic_bool m_ConnectionStartCancelled{false};
     std::atomic_bool m_WaitingForSessionCleanup;
     std::atomic_bool m_WaitingForActiveSessionTakeoverDecision {false};
     std::atomic_int m_ActiveSessionTakeoverDecision {0};
@@ -635,7 +638,7 @@ private:
     bool m_HasWindowedPresentationGeometry = false;
     QVector<SDL_Window*> m_SecondaryWindows;
     PlankPresentationLayout m_PresentationLayout;
-    SdlInputHandler* m_InputHandler;
+    SdlInputHandler* m_InputHandler = nullptr;
     PlankCallbackTarget<SdlInputHandler> m_InputCallbacks;
 #ifdef PLANK_QT_SESSION
     PlankCallbackTarget<QtSessionInput> m_QtInputCallbacks;

@@ -1,8 +1,8 @@
+#include <QDebug>
 #include "linuxwacom.h"
 #include "pentiltencoding.h"
 
 #include <Limelight.h>
-#include <SDL3/SDL.h>
 #include <libinput.h>
 #include <libudev.h>
 
@@ -43,7 +43,7 @@ unsigned char toolType(libinput_tablet_tool* tool)
 
 } // namespace
 
-LinuxWacomInput::LinuxWacomInput(std::function<void()> tabletActivity)
+LinuxWacomInput::LinuxWacomInput(std::function<void()> tabletActivity, PlankPenObserver penObserver)
     : m_Active(false),
       m_Stopping(false),
       m_TipDown(false),
@@ -55,7 +55,8 @@ LinuxWacomInput::LinuxWacomInput(std::function<void()> tabletActivity)
       m_Distance(0.0f),
       m_Rotation(kUnknownRotation),
       m_Tilt(kUnknownTilt),
-      m_TabletActivity(std::move(tabletActivity))
+      m_TabletActivity(std::move(tabletActivity)),
+      m_PenObserver(std::move(penObserver))
 {
     m_Thread = std::thread(&LinuxWacomInput::run, this);
 }
@@ -79,6 +80,8 @@ void LinuxWacomInput::setActive(bool active)
     if (!active) {
         std::lock_guard<std::mutex> stateLock(m_StateMutex);
         cancelRemotePen();
+        m_PenMetrics.reset();
+        if (m_PenObserver) m_PenObserver({});
     }
 
     std::lock_guard<std::mutex> lock(m_DeviceMutex);
@@ -96,6 +99,8 @@ void LinuxWacomInput::beginReconnect()
         // until finishReconnect(), even if this window remains focused.
         std::lock_guard<std::mutex> lock(m_StateMutex);
         cancelRemotePen();
+        m_PenMetrics.reset();
+        if (m_PenObserver) m_PenObserver({});
     }
     std::lock_guard<std::mutex> lock(m_DeviceMutex);
     for (int fd : m_PenFds) updateGrab(fd, false);
@@ -175,8 +180,7 @@ void LinuxWacomInput::updateGrab(int fd, bool grabbed)
 {
     const int value = grabbed ? 1 : 0;
     if (ioctl(fd, EVIOCGRAB, value) < 0 && errno != ENODEV) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                    "Unable to %s Wacom tablet node: %s",
+        qWarning("Unable to %s Wacom tablet node: %s",
                     grabbed ? "grab" : "release", std::strerror(errno));
     }
 }
@@ -196,14 +200,13 @@ void LinuxWacomInput::run()
     };
     udev* udevContext = udev_new();
     if (udevContext == nullptr) {
-        SDL_LogError(SDL_LOG_CATEGORY_INPUT, "Unable to create udev context for Wacom input");
+        qCritical("Unable to create udev context for Wacom input");
         return;
     }
 
     libinput* input = libinput_udev_create_context(&interface, this, udevContext);
     if (input == nullptr || libinput_udev_assign_seat(input, "seat0") != 0) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                    "Wacom input unavailable; check PLANK input-device permissions");
+        qWarning("Wacom input unavailable; check PLANK input-device permissions");
         if (input != nullptr) {
             libinput_unref(input);
         }
@@ -211,13 +214,13 @@ void LinuxWacomInput::run()
         return;
     }
 
-    SDL_LogInfo(SDL_LOG_CATEGORY_INPUT, "Linux Wacom tablet capture initialized");
+    qInfo("Linux Wacom tablet capture initialized");
     libinput_dispatch(input);
     while (!m_Stopping.load()) {
         pollfd descriptor = {libinput_get_fd(input), POLLIN, 0};
         const int result = poll(&descriptor, 1, 100);
         if (result < 0 && errno != EINTR) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "Wacom input poll failed: %s",
+            qWarning("Wacom input poll failed: %s",
                         std::strerror(errno));
             break;
         }
@@ -231,6 +234,13 @@ void LinuxWacomInput::run()
         libinput_event* event = nullptr;
         while ((event = libinput_get_event(input)) != nullptr) {
             const libinput_event_type type = libinput_event_get_type(event);
+            if (m_PenObserver && type == LIBINPUT_EVENT_DEVICE_REMOVED &&
+                libinput_device_get_id_vendor(libinput_event_get_device(event)) == kWacomVendorId) {
+                std::lock_guard<std::mutex> lock(m_StateMutex);
+                m_PenMetrics.reset();
+                m_PenNear = false;
+                m_PenObserver({});
+            }
             if (type >= LIBINPUT_EVENT_TABLET_TOOL_AXIS &&
                     type <= LIBINPUT_EVENT_TABLET_TOOL_BUTTON) {
                 libinput_event_tablet_tool* tabletEvent =
@@ -281,6 +291,7 @@ void LinuxWacomInput::handleTabletEvent(libinput_event_tablet_tool* event,
 
     unsigned char eventType = m_TipDown ? LI_TOUCH_EVENT_MOVE : LI_TOUCH_EVENT_HOVER;
     if (type == LIBINPUT_EVENT_TABLET_TOOL_PROXIMITY) {
+        m_PenNear = libinput_event_tablet_tool_get_proximity_state(event) == LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_IN;
         if (libinput_event_tablet_tool_get_proximity_state(event) ==
                 LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_OUT) {
             eventType = LI_TOUCH_EVENT_HOVER_LEAVE;
@@ -321,11 +332,20 @@ void LinuxWacomInput::handleTabletEvent(libinput_event_tablet_tool* event,
 
     if (m_Active.load() && !m_Reconnecting.load()) {
         const float pressureOrDistance = m_TipDown ? m_Pressure : m_Distance;
-        LiSendPenEvent(eventType, m_ToolType, m_Buttons,
+        const int sent = LiSendPenEvent(eventType, m_ToolType, m_Buttons,
                        std::max(0.0f, std::min(1.0f, m_X)),
                        std::max(0.0f, std::min(1.0f, m_Y)),
                        std::max(0.0f, std::min(1.0f, pressureOrDistance)),
                        0.0f, 0.0f, m_Rotation, m_Tilt);
+        if (m_PenObserver) {
+            if (sent == 0) {
+                m_PenObserver(m_PenMetrics.sample(std::llround(double(m_X) * 65535.0),
+                    std::llround(double(m_Y) * 65535.0), m_PenNear, m_TipDown));
+            } else {
+                m_PenMetrics.reset();
+                m_PenObserver({});
+            }
+        }
         if (m_TabletActivity) {
             m_TabletActivity();
         }

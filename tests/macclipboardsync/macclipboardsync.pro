@@ -3,7 +3,6 @@ DEFINES += PLANK_CLIPBOARD_TEST_PASTEBOARD
 CONFIG += console testcase c++17 link_pkgconfig
 TEMPLATE = app
 
-PKGCONFIG += sdl3
 LIBS += -framework AppKit
 
 INCLUDEPATH += \
@@ -18,5 +17,4 @@ SOURCES += \
 
 HEADERS += \
     ../../app/streaming/macclipboardsync.h \
-    ../../app/streaming/clipboardpolltimer.h \
     ../../app/streaming/plankclipboard.h

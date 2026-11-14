@@ -21,6 +21,12 @@
 namespace {
 bool parseManualAddress(const QString& address, NvAddress& manualAddress)
 {
+    // Accept an unbracketed IPv6 literal through the same bookmark path, so
+    // it also retains the requested settings and independent bookmark ID.
+    if (QHostAddress(address.trimmed()).protocol() == QAbstractSocket::IPv6Protocol) {
+        manualAddress = NvAddress(address.trimmed(), PlankClientPolicy().networkPort());
+        return true;
+    }
     const QUrl url = QUrl::fromUserInput("plank://" + address.trimmed());
     if (!url.isValid() || url.host().isEmpty() || url.scheme() != "plank") {
         return false;
@@ -88,12 +94,11 @@ bool parseProfileBitrates(const QVariantList& values,
 }
 }
 
-class PcMonitorThread : public QThread
+class PcMonitorThread : public PollingThread
 {
     Q_OBJECT
 
 #define TRIES_BEFORE_OFFLINING 2
-#define POLLS_PER_APPLIST_FETCH 10
 
 public:
     PcMonitorThread(NvComputer* computer)
@@ -178,26 +183,6 @@ private:
         return true;
     }
 
-    bool updateAppList(QNetworkAccessManager* nam, bool& changed)
-    {
-        NvHTTP http(m_Computer, nam);
-
-        QVector<NvApp> appList;
-
-        try {
-            appList = http.getAppList();
-            if (appList.isEmpty()) {
-                return false;
-            }
-        } catch (...) {
-            return false;
-        }
-
-        QWriteLocker lock(&m_Computer->lock);
-        changed = m_Computer->updateAppList(appList);
-        return true;
-    }
-
     void run() override
     {
         // Reduce the power and performance impact of our
@@ -215,15 +200,13 @@ private:
         // ensures that the NAM's worker thread will inherit our lower priority.
         QNetworkAccessManager nam;
 
-        // Always fetch the applist the first time
-        int pollsSinceLastAppListFetch = POLLS_PER_APPLIST_FETCH;
-        while (!isInterruptionRequested()) {
+        while (!stopping()) {
             bool stateChanged = false;
             bool online = false;
             bool wasOnline = m_Computer->state == NvComputer::CS_ONLINE;
             for (int i = 0; i < (wasOnline ? TRIES_BEFORE_OFFLINING : 1) && !online; i++) {
                 for (auto& address : m_Computer->uniqueAddresses()) {
-                    if (isInterruptionRequested()) {
+                    if (stopping()) {
                         return;
                     }
 
@@ -237,7 +220,7 @@ private:
                 }
             }
 
-            if (isInterruptionRequested()) {
+            if (stopping()) {
                 return;
             }
 
@@ -250,34 +233,15 @@ private:
                 stateChanged = true;
             }
 
-            // Grab the applist if it's empty or it's been long enough that we need to refresh
-            pollsSinceLastAppListFetch++;
-            if (m_Computer->state == NvComputer::CS_ONLINE &&
-                    m_Computer->authorizationState == NvComputer::AS_AUTHORIZED &&
-                    (m_Computer->appList.isEmpty() || pollsSinceLastAppListFetch >= POLLS_PER_APPLIST_FETCH)) {
-                // Notify prior to the app list poll since it may take a while, and we don't
-                // want to delay onlining of a machine, especially if we already have a cached list.
-                if (stateChanged) {
-                    emit computerStateChanged(m_Computer);
-                    stateChanged = false;
-                }
-
-                if (updateAppList(&nam, stateChanged)) {
-                    pollsSinceLastAppListFetch = 0;
-                }
-            }
+            // The desktop contract is fetched during authenticated launch.
+            // Status polling does not refresh an immutable game/application list.
 
             if (stateChanged) {
                 // Tell anyone listening that we've changed state
                 emit computerStateChanged(m_Computer);
             }
 
-            // Wait a bit to poll again, but do it in 100 ms chunks
-            // so we can be interrupted reasonably quickly.
-            // FIXME: QWaitCondition would be better.
-            for (int i = 0; i < 30 && !isInterruptionRequested(); i++) {
-                QThread::msleep(100);
-            }
+            waitForNextPoll(3000);
         }
     }
 
@@ -348,8 +312,11 @@ ComputerManager::~ComputerManager()
     // to avoid deadlocking with a flush that needs the lock in read mode.
     {
         // Wake the delayed flush thread
-        m_DelayedFlushThread->requestInterruption();
-        m_DelayedFlushCondition.wakeOne();
+        {
+            QMutexLocker flushLock(&m_DelayedFlushMutex);
+            m_DelayedFlushThread->requestInterruption();
+            m_DelayedFlushCondition.wakeOne();
+        }
 
         // Wait for it to terminate (and finish any pending flush)
         m_DelayedFlushThread->wait();
@@ -409,6 +376,7 @@ void DelayedFlushThread::run() {
             m_ComputerManager->m_NeedsDelayedFlush = false;
 
             // Update the last serialized hosts map under the delayed flush mutex
+            QReadLocker hostsLock(&m_ComputerManager->m_Lock);
             m_ComputerManager->m_LastSerializedHosts.clear();
             for (const NvComputer* computer : std::as_const(m_ComputerManager->m_KnownHosts)) {
                 // Copy the current state of the NvComputer to allow us to check later if we need
@@ -877,7 +845,6 @@ void ComputerManager::authenticateHost(NvComputer* computer, QString username,
 {
     QString matchedMode;
     int matchedScale = 1;
-#ifdef PLANK_QT_SESSION
     Q_ASSERT(QThread::currentThread() == qApp->thread());
     const auto clientOutputs = ClientDisplays::snapshot();
     ClientDisplays::Selection clientSelection;
@@ -889,7 +856,6 @@ void ComputerManager::authenticateHost(NvComputer* computer, QString username,
         computer->plankSessionTargetDisplay = clientSelection.target;
         computer->plankSessionDisplayNotice = clientSelection.notice;
     }
-#endif
     bool matchMac;
     {
         QReadLocker lock(&computer->lock);
@@ -912,12 +878,6 @@ void ComputerManager::authenticateHost(NvComputer* computer, QString username,
         for (const auto& output : clientOutputs) {
             if (clientSelection.names.contains(output.name))
                 displays.append({output.bounds, output.pixels, {}, output.name == clientSelection.target});
-        }
-#else
-        for (QScreen* screen : QGuiApplication::screens()) {
-            const QRect geometry = screen->geometry();
-            const qreal ratio = screen->devicePixelRatio();
-            displays.append({geometry, QSize(qRound(geometry.width() * ratio), qRound(geometry.height() * ratio))});
         }
 #endif
 #endif
@@ -998,6 +958,7 @@ public:
     explicit HostPlatformProbe(NvAddress address) : m_Address(std::move(address)) {}
     void run() override {
         int platform = 0;
+        int displayPolicy = -1;
         try {
             NvHTTP http(m_Address);
             const QString info = http.getServerInfo(NvHTTP::NVLL_NONE, true);
@@ -1006,14 +967,17 @@ public:
                 platform = NvOutputTopology::hostPlatform(
                     NvHTTP::getXmlString(info, "PlankTopologyVersion").toInt(),
                     NvHTTP::getXmlString(info, "PlankFeatureFlags").toInt());
+                displayPolicy = NvOutputTopology::hostDisplayPolicy(
+                    NvHTTP::getXmlString(info, "PlankDisplayPolicyVersion").toInt(),
+                    NvHTTP::getXmlString(info, "PlankDisplayPolicy"));
             }
         } catch (const GfeHttpResponseException&) {
         } catch (const QtNetworkReplyException&) {
         }
-        emit completed(platform);
+        emit completed(platform, displayPolicy);
     }
 signals:
-    void completed(int platform);
+    void completed(int platform, int displayPolicy);
 private:
     NvAddress m_Address;
 };
@@ -1030,9 +994,9 @@ int ComputerManager::probeHostPlatform(QString address)
     if (m_HostPlatformProbeSequence == std::numeric_limits<int>::max()) m_HostPlatformProbeSequence = 0;
     const int requestId = ++m_HostPlatformProbeSequence;
     auto* task = new HostPlatformProbe(parsed);
-    connect(task, &HostPlatformProbe::completed, this, [this, requestId, address](int platform) {
+    connect(task, &HostPlatformProbe::completed, this, [this, requestId, address](int platform, int displayPolicy) {
         m_HostPlatformProbePending = false;
-        emit hostPlatformDetected(requestId, address, platform);
+        emit hostPlatformDetected(requestId, address, platform, displayPolicy);
     }, Qt::QueuedConnection);
     QThreadPool::globalInstance()->start(task);
     return requestId;
@@ -1092,60 +1056,23 @@ void ComputerManager::addNewHostManually(QString address, QString nickname,
             nickname = manualAddress.address();
         }
 
-        NvComputer* bookmark = nullptr;
+        // Add always creates a distinct configuration. Only Edit may change
+        // an existing bookmark; the Host address is not a bookmark identity.
+        auto* bookmark = new NvComputer(manualAddress, nickname.trimmed(), videoProfile,
+                                        captureSource, profileBitratesKbps);
+        bookmark->plankScalingMode = scalingMode;
+        bookmark->plankClientDisplays = clientDisplays;
+        bookmark->plankHostLayout = hostLayout;
+        bookmark->plankVirtualMode1 = virtualMode1;
+        bookmark->plankVirtualMode2 = virtualMode2;
         {
             QWriteLocker lock(&m_Lock);
-            for (NvComputer* computer : m_KnownHosts) {
-                QReadLocker computerLock(&computer->lock);
-                if (computer->manualAddress == manualAddress) {
-                    bookmark = computer;
-                    break;
-                }
-            }
-
-            if (bookmark == nullptr) {
-                bookmark = new NvComputer(manualAddress, nickname.trimmed(), videoProfile,
-                                          captureSource,
-                                          profileBitratesKbps);
-                bookmark->plankScalingMode = scalingMode;
-                bookmark->plankClientDisplays = clientDisplays;
-                bookmark->plankHostLayout = hostLayout;
-                bookmark->plankVirtualMode1 = virtualMode1;
-                bookmark->plankVirtualMode2 = virtualMode2;
-                m_KnownHosts[bookmark->uuid] = bookmark;
-                startPollingComputer(bookmark);
-            }
+            m_KnownHosts[bookmark->uuid] = bookmark;
+            startPollingComputer(bookmark);
         }
-
-        {
-            QWriteLocker bookmarkLock(&bookmark->lock);
-            bookmark->plankScalingMode = scalingMode;
-            bookmark->plankClientDisplays = clientDisplays;
-            bookmark->plankHostLayout = hostLayout;
-            bookmark->plankVirtualMode1 = virtualMode1;
-            bookmark->plankVirtualMode2 = virtualMode2;
-            bookmark->plankVideoProfile = videoProfile;
-            bookmark->plankCaptureSource = captureSource;
-            bookmark->plankProfileBitratesKbps = profileBitratesKbps;
-        }
-
-        bool nicknameChanged;
-        {
-            QReadLocker bookmarkLock(&bookmark->lock);
-            nicknameChanged = bookmark->name != nickname.trimmed();
-        }
-        if (nicknameChanged) {
-            renameHost(bookmark, nickname.trimmed());
-        }
-        else {
-            saveHosts();
-            emit computerStateChanged(bookmark);
-        }
+        saveHosts();
+        emit computerStateChanged(bookmark);
         emit computerAddCompleted(true);
-    }
-    else if (QHostAddress(address).protocol() == QAbstractSocket::IPv6Protocol) {
-        // The user specified an IPv6 literal without URL escaping, so use the default port
-        addNewHost(NvAddress(address, PlankClientPolicy().networkPort()), false);
     }
     else {
         emit computerAddCompleted(false);
@@ -1195,22 +1122,10 @@ bool ComputerManager::editManualBookmark(NvComputer* computer, QString address,
         addressChanged = computer->manualAddress != manualAddress;
     }
 
-    QString oldUuid;
-    ComputerPollingEntry* pollingEntry = nullptr;
     if (addressChanged) {
         {
             QWriteLocker managerLock(&m_Lock);
-            for (NvComputer* candidate : m_KnownHosts) {
-                if (candidate == computer) {
-                    continue;
-                }
-                QReadLocker candidateLock(&candidate->lock);
-                if (candidate->manualAddress == manualAddress) {
-                    return false;
-                }
-            }
-            oldUuid = computer->uuid;
-            pollingEntry = m_PollEntries.take(computer->uuid);
+            auto* pollingEntry = m_PollEntries.value(computer->uuid);
             if (pollingEntry != nullptr) {
                 pollingEntry->interrupt();
             }
@@ -1220,11 +1135,6 @@ bool ComputerManager::editManualBookmark(NvComputer* computer, QString address,
                                            virtualMode1, virtualMode2,
                                            videoProfile, captureSource,
                                            profileBitratesKbps, clientDisplays);
-            m_KnownHosts.remove(oldUuid);
-            m_KnownHosts[computer->uuid] = computer;
-            if (pollingEntry != nullptr) {
-                m_PollEntries[computer->uuid] = pollingEntry;
-            }
             startPollingComputer(computer);
         }
 
