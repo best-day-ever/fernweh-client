@@ -2,7 +2,8 @@
 
 The shared macOS, Windows and Linux Client for [BDE Fernweh](https://github.com/best-day-ever/fernweh),
 an enhanced downstream fork of [PLANK Client](https://github.com/instinctual/plank-client).
-This component is private for review; it is source only and does not announce a release.
+This is public ALPHA source; publication does not announce a binary release.
+The parent [publication receipt](https://github.com/best-day-ever/fernweh/blob/main/docs/fernweh/review.md) records the history audit.
 
 Build from the parent Fernweh repository's pinned gitlink, native transport,
 dependency archives and patches. Standalone qmake source is not a replacement
