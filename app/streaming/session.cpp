@@ -1265,7 +1265,7 @@ void Session::logDiagnosticVideoPipeline() const
     if (m_Reconnecting.load() || m_ReconnectRequested.load() ||
             m_LastDiagnosticStats.load() == 0 || diagnosticReceivedAgeMs() >= 5000 ||
             diagnosticStatisticsAgeMs() <= 10000) return;
-    const auto now = SDL_GetTicks();
+    const auto now = PlankClock::milliseconds();
     const auto decode = PlankVideoPipeline::read(PlankVideoPipeline::decodeOperation, now);
     const auto render = PlankVideoPipeline::read(PlankVideoPipeline::renderOperation, now);
     // Called by the existing five-second diagnostics timer. No decoder, queue
@@ -1415,7 +1415,7 @@ void Session::plankTransportVideoReceiveLoop()
         }
 
         m_Diagnostics.videoReceived();
-        m_LastPlankVideoReceived.store(SDL_GetTicks());
+        m_LastPlankVideoReceived.store(PlankClock::milliseconds());
         frameFlow.record(ClientFrameFlowTrace::Receive,
                          (info.pts / 90000) * 1000000 + (info.pts % 90000) * 1000000 / 90000,
                          info.frame_number,
@@ -4089,7 +4089,7 @@ bool Session::startConnectionAsync(bool reconnecting,
                             }
                             if (reconnecting && PlankReconnectPolicy::terminalStatus(
                                     retryError.getStatusCode(), true,
-                                    SDL_GetTicks() < m_DesktopHandoffRetryDeadline.load()))
+                                    PlankClock::milliseconds() < m_DesktopHandoffRetryDeadline.load()))
                                 m_Lifecycle.stop();
                             throw;
                         } catch (const QtNetworkReplyException& retryError) {
@@ -4919,7 +4919,7 @@ bool Session::beginPlankReconnect(
     m_Reconnecting.store(true);
 #endif
     m_ReconnectGreeterConfirmed.store(false);
-    const bool noticeFresh = m_DesktopHandoffNoticeDeadline.exchange(0) > SDL_GetTicks();
+    const bool noticeFresh = m_DesktopHandoffNoticeDeadline.exchange(0) > PlankClock::milliseconds();
     const bool greeterConfirmed = m_AuthenticatedGreeter.exchange(false);
     const bool openingDesktop = noticeFresh ||
             (greeterConfirmed &&
@@ -4928,7 +4928,7 @@ bool Session::beginPlankReconnect(
     // X session. A broker connect or host admission during that short gap can
     // return 401 even though this user's desktop is opening. Keep the normal
     // terminal 401 policy outside this bounded, explicit handoff window.
-    m_DesktopHandoffRetryDeadline.store(openingDesktop ? SDL_GetTicks() + 15000 : 0);
+    m_DesktopHandoffRetryDeadline.store(openingDesktop ? PlankClock::milliseconds() + 15000 : 0);
     setPlankReconnectStatus(
                 openingDesktop ? "Opening your desktop..." : "Waiting for workstation...", false);
 
@@ -5097,7 +5097,7 @@ bool Session::runPlankReconnect()
         } catch (const GfeHttpResponseException& error) {
             qWarning() << "PLANK reconnect attempt" << attempt
                        << "failed:" << error.toQString();
-            const bool openingDesktop = SDL_GetTicks() < m_DesktopHandoffRetryDeadline.load();
+            const bool openingDesktop = PlankClock::milliseconds() < m_DesktopHandoffRetryDeadline.load();
             if (PlankReconnectPolicy::terminalStatus(error.getStatusCode(), authenticating,
                                                      openingDesktop)) {
                 m_Lifecycle.stop();
@@ -5128,7 +5128,7 @@ bool Session::runPlankReconnect()
         LiStopConnection();
         stopPlankTransportDataPlane();
         if (!m_Lifecycle.stopping()) {
-            const int RetryDelayMs = SDL_GetTicks() < m_DesktopHandoffRetryDeadline.load() ?
+            const int RetryDelayMs = PlankClock::milliseconds() < m_DesktopHandoffRetryDeadline.load() ?
                         2000 : 1000;
             constexpr int CancellationPollMs = 50;
             for (int elapsedMs = 0;
@@ -5923,8 +5923,9 @@ void Session::execInternal()
             goto DispatchDeferredCleanup;
         }
 #endif
-        const Uint64 now = SDL_GetTicks();
-        const bool videoSilent = PlankHostRecovery::videoSilent(now, m_LastPlankVideoReceived.load());
+        const Uint64 now = SDL_GetTicks(); // SDL-only toolbar/display-settle timers.
+        const auto networkNow = PlankClock::milliseconds();
+        const bool videoSilent = PlankHostRecovery::videoSilent(networkNow, m_LastPlankVideoReceived.load());
         if (workerProbe != nullptr && workerProbe->isFinished()) {
             workerProbe->wait();
             if (!m_Reconnecting.load() && !m_ReconnectRequested.load() && m_CanReconnect.load() &&
@@ -5935,14 +5936,14 @@ void Session::execInternal()
             }
             delete workerProbe;
             workerProbe = nullptr;
-            nextWorkerProbe = now + PlankHostRecovery::ProbeIntervalMs;
+            nextWorkerProbe = networkNow + PlankHostRecovery::ProbeIntervalMs;
         }
         if (!m_Reconnecting.load() && !m_ReconnectRequested.load()) {
             if (videoSilent && m_CanReconnect.load() && !m_PlankWorkerInstance.isEmpty()) {
                 // Video silence is normal for an unchanged desktop. Probe for
                 // a replacement worker, but show recovery status only after
                 // that replacement or a transport failure is confirmed.
-                if (workerProbe == nullptr && now >= nextWorkerProbe) {
+                if (workerProbe == nullptr && networkNow >= nextWorkerProbe) {
                     workerProbe = new PlankWorkerProbeThread(m_Computer->activeAddress,
                                     m_PlankWorkerInstance, m_PlankHostCertificateSha256,
                                     !m_Computer->brokerHostCertSha256.isEmpty());
@@ -5989,7 +5990,7 @@ void Session::execInternal()
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "PLANK unreachable-host prompt requested continued retries");
                 m_PlankToolbar->hideReconnectPrompt();
-                reconnectDecisionDeadline = SDL_GetTicks() +
+                reconnectDecisionDeadline = PlankClock::milliseconds() +
                         static_cast<Uint64>(m_Preferences->plankUnreachableTimeoutSeconds) * 1000;
                 m_ReconnectPolicy.allowUntil(reconnectDecisionDeadline);
                 setPlankReconnectStatus("Waiting for workstation...", false);
@@ -6024,7 +6025,7 @@ void Session::execInternal()
         // notice. Use the replacement worker's authenticated stage instead.
         // Apply only on the SDL thread and never override an expired timeout.
         if (m_ReconnectGreeterConfirmed.exchange(false) && m_Reconnecting.load() &&
-                reconnectDecisionDeadline != 0 && SDL_GetTicks() < reconnectDecisionDeadline) {
+                reconnectDecisionDeadline != 0 && PlankClock::milliseconds() < reconnectDecisionDeadline) {
             setPlankReconnectStatus("Returning to the sign-in screen...", false);
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Authenticated Host confirmed return to the sign-in screen");
@@ -6032,7 +6033,7 @@ void Session::execInternal()
 
         if (m_Reconnecting.load() && reconnectDecisionDeadline != 0 &&
                 (reconnectThread == nullptr || !reconnectThread->isFinished()) &&
-                SDL_GetTicks() >= reconnectDecisionDeadline) {
+                PlankClock::milliseconds() >= reconnectDecisionDeadline) {
             setPlankReconnectStatus("Workstation is taking longer to respond...", true);
             if (m_Preferences->plankUnreachableAction ==
                     StreamingPreferences::PLANK_UNREACHABLE_DISCONNECT) {
@@ -6225,7 +6226,7 @@ void Session::execInternal()
                                 tr("The workstation desktop changed, but the client could not start reconnecting."));
                     goto DispatchDeferredCleanup;
                 }
-                reconnectDecisionDeadline = SDL_GetTicks() +
+                reconnectDecisionDeadline = PlankClock::milliseconds() +
                         static_cast<Uint64>(m_Preferences->plankUnreachableTimeoutSeconds) * 1000;
                 m_ReconnectPolicy.allowUntil(reconnectDecisionDeadline);
                 reconnectThread = new PlankReconnectThread(this);

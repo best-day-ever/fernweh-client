@@ -18,6 +18,7 @@
 #include <string>
 #include "plankcallbacktarget.h"
 #include "clientdisplaychange.h"
+#include "monotonicclock.h"
 #include <thread>
 
 #include <Limelight.h>
@@ -215,13 +216,13 @@ public:
         if (fps > 0) m_Diagnostics.rendererProgress();
         m_CurrentRenderedFps.store(fps, std::memory_order_relaxed);
         m_CurrentVideoMbps.store(videoMbps, std::memory_order_relaxed);
-        m_LastDiagnosticStats.store(SDL_GetTicks(), std::memory_order_relaxed);
+        m_LastDiagnosticStats.store(PlankClock::milliseconds(), std::memory_order_relaxed);
     }
 
     quint32 diagnosticReceivedAgeMs() const {
 #ifdef PLANK_TRANSPORT
         const auto last = m_LastPlankVideoReceived.load();
-        return last == 0 ? 60000 : quint32(qMin<Uint64>(60000, SDL_GetTicks()-last));
+        return PlankClock::ageMilliseconds(last, PlankClock::milliseconds());
 #else
         return 60000;
 #endif
@@ -229,7 +230,7 @@ public:
     void logDiagnosticVideoPipeline() const;
     quint32 diagnosticStatisticsAgeMs() const {
         const auto last = m_LastDiagnosticStats.load();
-        return last == 0 ? 60000 : quint32(qMin<Uint64>(60000, SDL_GetTicks()-last));
+        return PlankClock::ageMilliseconds(last, PlankClock::milliseconds());
     }
     float diagnosticRenderedFps() const { return m_CurrentRenderedFps.load(std::memory_order_relaxed); }
     float diagnosticVideoMbps() const { return m_CurrentVideoMbps.load(std::memory_order_relaxed); }
