@@ -23,6 +23,7 @@
 #include "backend/clientinstances.h"
 #include "streaming/planksessionevents.h"
 #include "streaming/input/plankmousemotion.h"
+#include "streaming/input/penmetrics.h"
 #include "streaming/streamutils.h"
 #include "backend/clientdisplayprobe.h"
 #include "backend/displayprofile.h"
