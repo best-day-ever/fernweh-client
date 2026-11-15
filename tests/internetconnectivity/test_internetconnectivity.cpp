@@ -650,7 +650,11 @@ void ConnectivityTest::statusUi()
                 background: Rectangle { color: "#393D43" }
                 RowLayout {
                     anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12
-                    Label { text: "1.4.05-client-live-connectivity"; font.pointSize: 9; color: "#B7BDC5" }
+                    Label {
+                        text: "1.4.05-client-live-connectivity"; font.pointSize: 9; color: "#B7BDC5"
+                        Layout.minimumWidth: 0; Layout.maximumWidth: implicitWidth
+                        elide: Text.ElideRight
+                    }
                     Label { text: "Computers"; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
                     PlankInternetStatus { monitor: testMonitor }
                     ToolButton { text: "+" }

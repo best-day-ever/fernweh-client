@@ -321,6 +321,9 @@ ApplicationWindow {
                 color: theme.textSecondary
                 font.pointSize: 9
                 font.weight: Font.Medium
+                Layout.minimumWidth: 0
+                Layout.maximumWidth: implicitWidth
+                elide: Text.ElideRight
                 horizontalAlignment: Qt.AlignLeft
                 verticalAlignment: Qt.AlignVCenter
             }
