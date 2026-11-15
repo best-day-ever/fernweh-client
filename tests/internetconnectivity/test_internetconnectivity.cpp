@@ -328,9 +328,9 @@ void ConnectivityTest::windowsEchoReplies()
         command.requiresWindowsEchoReply = true;
         return command;
     });
-    monitor.start();
+    monitor.setWindowVisible(true);
     QTRY_COMPARE(int(monitor.state()), expectedState);
-    monitor.refreshSummary();
+    monitor.setSummaryVisible(true);
     QTRY_VERIFY(!monitor.summaryRunning());
     const auto row = monitor.summaryResults().first().toMap();
     QCOMPARE(row.value("state").toInt(), expectedState);
@@ -351,13 +351,16 @@ void ConnectivityTest::windowsProbeDeadlineAndCancellation()
         return command;
     };
     Monitor deadlineMonitor(settings, nullptr, factory);
-    int heartbeat = 0;
-    QTimer timer;
-    connect(&timer, &QTimer::timeout, this, [&heartbeat] { ++heartbeat; });
-    timer.start(10);
-    deadlineMonitor.start();
+    deadlineMonitor.setWindowVisible(true);
+    bool responsiveWhilePending = false;
+    QTimer::singleShot(0, &deadlineMonitor, [&] {
+        responsiveWhilePending = deadlineMonitor.state() == Monitor::Checking;
+    });
+    QElapsedTimer elapsed;
+    elapsed.start();
     QTRY_COMPARE_WITH_TIMEOUT(deadlineMonitor.state(), Monitor::NoResponse, 2500);
-    QVERIFY(heartbeat >= 3);
+    QVERIFY(elapsed.elapsed() < 2500);
+    QVERIFY(responsiveWhilePending);
     QTRY_VERIFY(deadlineMonitor.findChildren<QProcess*>().isEmpty());
     deadlineMonitor.stop();
 
@@ -367,18 +370,23 @@ void ConnectivityTest::windowsProbeDeadlineAndCancellation()
     // Use the normal one-second budget for that independent contract.
     settings.timeoutMs = 1000;
     Monitor monitor(settings, nullptr, factory);
-    monitor.refreshSummary();
-    monitor.cancelSummary();
+    showSummary(monitor);
+    QVERIFY(monitor.summaryRunning());
+    monitor.setWindowVisible(false);
     slow = false;
-    monitor.refreshSummary();
+    monitor.setWindowVisible(true);
     QTRY_VERIFY(!monitor.summaryRunning());
     QCOMPARE(monitor.summaryResults().first().toMap().value("state").toInt(), int(Monitor::Reachable));
+    QCOMPARE(monitor.summaryResults().first().toMap().value("roundTripMs").toDouble(), 0.0);
     QTRY_VERIFY(monitor.findChildren<QProcess*>().isEmpty());
+    const auto cached = monitor.summaryResults();
     slow = true;
-    monitor.refreshSummary();
+    monitor.checkNow();
+    QVERIFY(monitor.summaryRunning());
     monitor.stop();
     QTRY_VERIFY(monitor.findChildren<QProcess*>().isEmpty());
     QVERIFY(!monitor.summaryRunning());
+    QCOMPARE(monitor.summaryResults(), cached);
 }
 
 void ConnectivityTest::systemPingLoopback()
