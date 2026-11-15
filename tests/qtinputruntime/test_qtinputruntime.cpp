@@ -18,6 +18,10 @@
 // Link-time test doubles only. The production runtime uses the unchanged
 // readers; these tests require no physical device or transport connection.
 namespace {
+#ifdef Q_OS_MACOS
+std::function<bool(const MacKeyEvent&)> nativeHotkey;
+bool nativeCaptureActive = false;
+#endif
 struct Wire { int kind, a, b, c, d; };
 QList<Wire> wire;
 int positionResult = 0;
@@ -98,10 +102,11 @@ void MacRawWacomInput::finishReconnect() { tabletCall("raw-resume"); }
 void MacRawWacomInput::handleControl(const unsigned char*, unsigned int) {}
 struct MacKeyboardCapture::State {};
 MacKeyboardCapture::MacKeyboardCapture(std::function<bool()>, std::function<void()>) {}
-MacKeyboardCapture::~MacKeyboardCapture() = default;
+MacKeyboardCapture::~MacKeyboardCapture() { nativeHotkey = {}; nativeCaptureActive = false; }
 void MacKeyboardCapture::refresh() {}
-bool MacKeyboardCapture::capturesKeys() const { return false; }
+bool MacKeyboardCapture::capturesKeys() const { return nativeCaptureActive; }
 void MacKeyboardCapture::setQueueWake(std::function<bool()>) {}
+void MacKeyboardCapture::setLocalHotkeyHandler(std::function<bool(const MacKeyEvent&)> handler) { nativeHotkey = std::move(handler); }
 void MacKeyboardCapture::dispatchPending(const std::function<void(const MacKeyEvent&)>&) {}
 bool MacKeyboardCapture::suppressSdlKeyEvent() const { return false; }
 struct MacQuitShortcut::State {};
@@ -166,6 +171,72 @@ private slots:
         f.input.handleCursorPosition(reinterpret_cast<const unsigned char*>(&packet),sizeof(packet));
         QCoreApplication::processEvents(); QCOMPARE(positions.size(),1);
     }
+    void toolbarShortcutConsumesRepeatAndRelease()
+    {
+        Fixture f;
+        QSignalSpy actions(&f.input, &QtSessionInput::shortcutRequested);
+#ifdef Q_OS_MACOS
+        constexpr quint32 scan = 17;
+#else
+        constexpr quint32 scan = KEY_T + 8;
+#endif
+        const auto mods = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+        f.input.key(scan, Qt::Key_T, true, false, mods);
+        f.input.key(scan, Qt::Key_T, true, true, mods);
+        f.input.key(scan, Qt::Key_T, false, false, {});
+        QCOMPARE(actions.size(), 1);
+        QCOMPARE(actions.first().first().toInt(), int(Qt::Key_T));
+        QVERIFY(wire.isEmpty());
+        f.input.key(scan, Qt::Key_T, true, false, {});
+        f.input.key(scan, Qt::Key_T, false, false, {});
+        QCOMPARE(wire.size(), 2);
+        QCOMPARE(wire.first().a, 0x54);
+    }
+#ifdef Q_OS_MACOS
+    void nativeReservedControlsUseQueuedQtActions()
+    {
+        Fixture f; f.input.setSystemKeys(true);
+        nativeCaptureActive = true;
+        QSignalSpy actions(&f.input, &QtSessionInput::shortcutRequested);
+        QVERIFY(nativeHotkey);
+        const auto mods = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+        for (const auto code : {12u, 17u}) {
+            const auto previous = actions.size();
+            QVERIFY(nativeHotkey({code, true, mods}));
+            QCOMPARE(actions.size(), previous);
+            QCoreApplication::processEvents();
+            QCOMPARE(actions.size(), previous + 1);
+            QCOMPARE(actions.last().first().toInt(), code == 12 ? int(Qt::Key_Q) : int(Qt::Key_T));
+            QVERIFY(nativeHotkey({code, true, mods, true}));
+            QCoreApplication::processEvents();
+            QCOMPARE(actions.size(), previous + 1);
+        }
+        const auto previous = actions.size();
+        QVERIFY(nativeHotkey({12, true, mods}));
+        f.input.setFocused(false);
+        QCoreApplication::processEvents();
+        QCOMPARE(actions.size(), previous);
+        f.input.setFocused(true);
+        QVERIFY(nativeHotkey({12, true, mods}));
+        nativeCaptureActive = false; // Permission/tap revocation before delivery.
+        QCoreApplication::processEvents();
+        QCOMPARE(actions.size(), previous);
+        QVERIFY(wire.isEmpty());
+    }
+    void queuedNativeControlDoesNotOutliveInput()
+    {
+        QObject observer; int delivered = 0;
+        {
+            Fixture f; f.input.setSystemKeys(true);
+            nativeCaptureActive = true;
+            connect(&f.input, &QtSessionInput::shortcutRequested, &observer, [&](int) { ++delivered; });
+            QVERIFY(nativeHotkey({17, true, Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier}));
+            QCOMPARE(delivered, 0);
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(delivered, 0);
+    }
+#endif
     void pasteWaitsForClipboardPublicationAndConsumesItsKeyRelease()
     {
         Fixture f;

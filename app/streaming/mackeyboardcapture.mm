@@ -1,7 +1,9 @@
 #include <QDebug>
 #include "mackeyboardcapture.h"
 #include "qt/mackeymap.h"
+#include "input/sdl-darwin-scancodes.h"
 #include <iterator>
+#include <bitset>
 
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
@@ -57,6 +59,8 @@ struct MacKeyboardCapture::State
     std::function<bool()> ownsKeyboard;
     std::function<void()> releaseKeys;
     std::function<bool()> queueWake;
+    std::function<bool(const MacKeyEvent&)> localHotkey;
+    std::bitset<128> localKeys;
     std::function<bool()> isTrusted = [] { return AXIsProcessTrusted(); };
     CFMachPortRef tap = nullptr;
     CFRunLoopSourceRef source = nullptr;
@@ -70,6 +74,13 @@ struct MacKeyboardCapture::State
     bool isoKeyboard = KBGetLayoutType(LMGetKbdType()) == kKeyboardISO;
     static constexpr unsigned QueueLimit = 256;
 
+    void releaseLocalKeys()
+    {
+        for (unsigned code = 0; code < localKeys.size(); ++code)
+            if (localKeys[code] && localHotkey) localHotkey({code, false, {}});
+        localKeys.reset();
+    }
+
     void deactivate()
     {
         // Stop forwarding, not the session's native event source. A disabled
@@ -80,6 +91,7 @@ struct MacKeyboardCapture::State
         pending.clear();
         wakeQueued = false;
         lastModifiers = 0;
+        releaseLocalKeys();
         if (wasActive) releaseKeys();
     }
 
@@ -107,6 +119,16 @@ struct MacKeyboardCapture::State
         qInfo("macOS system shortcut capture enabled");
     }
 
+    static Qt::KeyboardModifiers qtModifiers(std::uint16_t mods)
+    {
+        Qt::KeyboardModifiers qtMods;
+        if (mods & 3) qtMods |= Qt::ShiftModifier;
+        if (mods & 12) qtMods |= Qt::ControlModifier;
+        if (mods & 48) qtMods |= Qt::AltModifier;
+        if (mods & 192) qtMods |= Qt::MetaModifier;
+        return qtMods;
+    }
+
     bool enqueue(std::uint32_t code, bool down, std::uint16_t mods)
     {
         if (pending.size() == QueueLimit) return false;
@@ -114,11 +136,7 @@ struct MacKeyboardCapture::State
             if (!queueWake || !queueWake()) return false;
             wakeQueued = true;
         }
-        Qt::KeyboardModifiers qtMods;
-        if (mods & 3) qtMods |= Qt::ShiftModifier;
-        if (mods & 12) qtMods |= Qt::ControlModifier;
-        if (mods & 48) qtMods |= Qt::AltModifier;
-        if (mods & 192) qtMods |= Qt::MetaModifier;
+        const auto qtMods = qtModifiers(mods);
         pending.push_back({code, down, qtMods});
         return true;
     }
@@ -184,6 +202,26 @@ struct MacKeyboardCapture::State
         if (!active) {
             if (!isTrusted()) return event;
             activate();
+        }
+        if (type != kCGEventFlagsChanged && raw >= 0 && raw < 128) {
+            const bool tracked = localKeys[raw];
+            const bool down = type == kCGEventKeyDown;
+            const MacKeyEvent key{static_cast<std::uint32_t>(raw), down,
+                qtModifiers(modifiersFromFlags(flags)),
+                down && (tracked || CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat))};
+            const bool accepted = localHotkey && localHotkey(key);
+            if (tracked) {
+                if (!down) localKeys.reset(raw);
+                return nullptr;
+            }
+            if (accepted) {
+                localKeys.set(raw, down);
+                pending.clear();
+                wakeQueued = false;
+                lastModifiers = 0;
+                releaseKeys();
+                return nullptr;
+            }
         }
         if (!queueKey(type, event)) {
             deactivate();
@@ -317,11 +355,32 @@ bool MacKeyboardCapture::capturesKeys() const
     return m_State->active && !m_State->dispatching;
 }
 
-// Compatibility entry points for the retained SDL frontend. Qt sessions drain
-// the same queue directly and never create an SDL event pump.
+void MacKeyboardCapture::setLocalHotkeyHandler(std::function<bool(const MacKeyEvent&)> handler)
+{
+    NSCAssert(NSThread.isMainThread, @"Keyboard capture is main-thread only");
+    m_State->releaseLocalKeys();
+    m_State->localHotkey = std::move(handler);
+}
+
+// Preserve the retained frontend's reserved-control callback without using an
+// SDL event queue. Qt installs the native hook above directly.
 void MacKeyboardCapture::setSessionHotkeyHandler(std::function<bool(const SDL_KeyboardEvent&)> handler)
 {
-    Q_UNUSED(handler);
+    if (!handler) { setLocalHotkeyHandler({}); return; }
+    setLocalHotkeyHandler([handler = std::move(handler)](const MacKeyEvent& native) {
+        SDL_KeyboardEvent key{};
+        key.down = native.down;
+        key.repeat = native.repeat;
+        key.scancode = native.code < std::size(darwin_scancode_table) ?
+            darwin_scancode_table[native.code] : SDL_SCANCODE_UNKNOWN;
+        const auto vk = qtMacRemoteKey(native.code).vk;
+        if (vk >= 'A' && vk <= 'Z') key.key = SDLK_A + vk - 'A';
+        if (native.modifiers & Qt::ControlModifier) key.mod |= SDL_KMOD_CTRL;
+        if (native.modifiers & Qt::AltModifier) key.mod |= SDL_KMOD_ALT;
+        if (native.modifiers & Qt::ShiftModifier) key.mod |= SDL_KMOD_SHIFT;
+        if (native.modifiers & Qt::MetaModifier) key.mod |= SDL_KMOD_GUI;
+        return handler(key);
+    });
 }
 bool MacKeyboardCapture::dispatch(const SDL_Event&, const std::function<void(SDL_KeyboardEvent*)>&)
 {

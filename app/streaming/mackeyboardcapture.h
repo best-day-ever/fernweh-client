@@ -10,6 +10,7 @@ struct MacKeyEvent {
     std::uint32_t code = 0;
     bool down = false;
     Qt::KeyboardModifiers modifiers;
+    bool repeat = false;
 };
 
 // Main-thread, session-scoped keyboard capture. Reserved local controls run
@@ -25,6 +26,9 @@ public:
     ~MacKeyboardCapture();
     void refresh();
     bool capturesKeys() const;
+    // Runs before the bounded remote queue. Accepted controls discard queued
+    // remote input and consume their repeats/release; queue GUI actions here.
+    void setLocalHotkeyHandler(std::function<bool(const MacKeyEvent&)> handler);
     void setSessionHotkeyHandler(std::function<bool(const SDL_KeyboardEvent&)> handler);
     bool dispatch(const SDL_Event& event,
                   const std::function<void(SDL_KeyboardEvent*)>& deliver);

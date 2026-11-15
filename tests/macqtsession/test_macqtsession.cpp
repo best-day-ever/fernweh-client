@@ -57,6 +57,8 @@ private slots:
             Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier), int(Qt::Key_Q));
         // Ordinary Command-Q belongs to the remote app, not local disconnect.
         QCOMPARE(qtSessionShortcut(12, Qt::Key_Q, Qt::MetaModifier), 0);
+        QCOMPARE(qtSessionShortcut(17, Qt::Key_unknown,
+            Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier), int(Qt::Key_T));
         QCOMPARE(qtSessionShortcut(46, Qt::Key_M,
             Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier), int(Qt::Key_M));
     }
@@ -146,6 +148,35 @@ private slots:
             QTRY_COMPARE(all->property("checked").toBool(),span);
             QCOMPARE(single->property("checked").toBool(),!span);
         }
+    }
+    void toolbarShortcutWorksWithReleasedInputAndKeepsPinPreference()
+    {
+        QWindow host; host.resize(1440,900);
+        Control control(&host); QtSessionWindow scene(&host,&control);
+        scene.resize(host.size()); scene.setLiveSession(true); scene.setWaiting(true);
+        QSignalSpy remote(&scene, &QtSessionWindow::remoteKey);
+        const auto mods = Qt::MetaModifier | Qt::AltModifier | Qt::ShiftModifier;
+        const auto send = [&](QEvent::Type type, bool repeat = false) {
+            QKeyEvent event(type, Qt::Key_T, mods, 17, 17, 0, {}, repeat);
+            QCoreApplication::sendEvent(&scene, &event);
+        };
+        send(QEvent::KeyPress);
+        QVERIFY(scene.toolbarVisible());
+        send(QEvent::KeyPress, true);
+        QVERIFY(scene.toolbarVisible());
+        scene.setWaiting(false); scene.setRemoteInputEnabled(true);
+        send(QEvent::KeyRelease);
+        QVERIFY(remote.isEmpty());
+        scene.setPinned(true);
+        scene.toggleToolbar();
+        QVERIFY(!scene.toolbarVisible()); QVERIFY(scene.pinned());
+        scene.toggleToolbar();
+        QVERIFY(scene.toolbarVisible()); QVERIFY(scene.pinned());
+        scene.setPinned(false);
+        scene.toggleToolbar(); scene.toggleToolbar();
+        QVERIFY(scene.toolbarVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(!scene.toolbarVisible(), 6500);
+        QVERIFY(!scene.pinned());
     }
     void redirectedSceneKeepsControlsAndRemoteInputSeparate()
     {
