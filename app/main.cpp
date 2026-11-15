@@ -1,4 +1,10 @@
 #include <QtGlobal>
+#ifdef Q_OS_WIN32
+// Qt provides main; SDL must not install its alternate entry point.
+#define SDL_MAIN_HANDLED
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+#endif
 #include <QTemporaryFile>
 #include <QDebug>
 #include <QGuiApplication>
@@ -54,10 +60,6 @@
 
 #if defined(Q_OS_WIN32)
 #include "antihookingprotection.h"
-#define SDL_MAIN_HANDLED
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_main.h>
-
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <dxgi1_6.h>

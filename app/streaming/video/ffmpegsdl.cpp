@@ -9,7 +9,6 @@
 #include "streaming/session.h"
 #include "streaming/planktoolbarstats.h"
 
-
 extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
@@ -782,8 +781,6 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
         av_frame_free(&frame);
     }
     else {
-
-
         // Tell overlay manager to use this frontend renderer
         Session::get()->getOverlayManager().setOverlayRenderer(m_FrontendRenderer);
 
