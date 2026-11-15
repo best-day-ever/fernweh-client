@@ -60,17 +60,20 @@ private slots:
         QCOMPARE(controls.take(), PlankSessionHotkeys::None);
         m_Capture->setSessionHotkeyHandler({});
     }
-    void reservedControlSurvivesSdlWakeRejection()
+    void reservedControlSurvivesQueueWakeRejection()
     {
         PlankSessionHotkeys controls;
         m_Capture->setSessionHotkeyHandler([&](const SDL_KeyboardEvent& event) { return controls.handle(event); });
-        const auto savedType = state().eventType;
-        SDL_SetEventEnabled(savedType, false);
+        state().active = false;
+        m_Capture->setQueueWake([] { return false; });
+        state().active = true;
         const auto flags = kCGEventFlagMaskControl | kCGEventFlagMaskAlternate | kCGEventFlagMaskShift;
         QVERIFY(capture(kVK_ANSI_Q, kCGEventKeyDown, flags));
         QCOMPARE(controls.take(), PlankSessionHotkeys::Disconnect);
         QVERIFY(state().pending.empty());
-        SDL_SetEventEnabled(savedType, true);
+        state().active = false;
+        m_Capture->setQueueWake([] { return true; });
+        state().active = true;
         m_Capture->setSessionHotkeyHandler({});
     }
     void backgroundReservedChordsRemainLocalToOtherApps()
@@ -83,6 +86,57 @@ private slots:
         QVERIFY(!capture(kVK_ANSI_T, kCGEventKeyDown, flags));
         QCOMPARE(controls.take(), PlankSessionHotkeys::None);
         m_Capture->setSessionHotkeyHandler({});
+    }
+    void reservedControlRepeatReleaseAndFocusEpoch()
+    {
+        PlankSessionHotkeys controls;
+        m_Capture->setSessionHotkeyHandler([&](const SDL_KeyboardEvent& event) { return controls.handle(event); });
+        const auto flags = kCGEventFlagMaskControl | kCGEventFlagMaskAlternate | kCGEventFlagMaskShift;
+        QVERIFY(capture(kVK_ANSI_T, kCGEventKeyDown, flags));
+        QCOMPARE(controls.take(), PlankSessionHotkeys::ToggleToolbar);
+        auto repeated = key(kVK_ANSI_T, kCGEventKeyDown, flags);
+        CGEventSetIntegerValueField(repeated, kCGKeyboardEventAutorepeat, 1);
+        for (int index = 0; index < 100; ++index) QVERIFY(!state().handle(kCGEventKeyDown, repeated));
+        CFRelease(repeated);
+        QCOMPARE(controls.take(), PlankSessionHotkeys::None);
+        QVERIFY(capture(kVK_ANSI_T, kCGEventKeyUp));
+        QVERIFY(drain().empty());
+        QVERIFY(capture(kVK_ANSI_T, kCGEventKeyDown, flags));
+        QCOMPARE(controls.take(), PlankSessionHotkeys::ToggleToolbar);
+        m_Focus = false;
+        QVERIFY(!capture(kVK_ANSI_A));
+        m_Focus = true;
+        state().isTrusted = [] { return true; };
+        // A consumed chord cannot make an ordinary T local after focus returns.
+        QVERIFY(capture(kVK_ANSI_T));
+        QCOMPARE(drain().back().code, unsigned(kVK_ANSI_T));
+        QCOMPARE(controls.take(), PlankSessionHotkeys::None);
+        m_Capture->setSessionHotkeyHandler({});
+    }
+    void nativeLocalHookDoesNotOverridePermission_data()
+    {
+        QTest::addColumn<bool>("revoked");
+        QTest::newRow("denied") << false;
+        QTest::newRow("revoked") << true;
+    }
+    void nativeLocalHookDoesNotOverridePermission()
+    {
+        QFETCH(bool, revoked);
+        int calls = 0;
+        m_Capture->setLocalHotkeyHandler([&](const MacKeyEvent& key) {
+            if (key.code != kVK_ANSI_Q) return false;
+            ++calls; return true;
+        });
+        if (revoked) {
+            QVERIFY(capture(kVK_ANSI_A));
+            m_Capture->refresh();
+            QVERIFY(!state().active);
+        } else state().active = false;
+        const auto flags = kCGEventFlagMaskControl | kCGEventFlagMaskAlternate | kCGEventFlagMaskShift;
+        QVERIFY(!capture(kVK_ANSI_Q, kCGEventKeyDown, flags));
+        QCOMPARE(calls, 0);
+        QVERIFY(state().pending.empty());
+        m_Capture->setLocalHotkeyHandler({});
     }
     void initTestCase() { QVERIFY(SDL_Init(SDL_INIT_EVENTS)); }
     void cleanupTestCase() { SDL_Quit(); }
@@ -154,10 +208,10 @@ private slots:
         QVERIFY(capture(kVK_Option, kCGEventFlagsChanged));
         const auto keys = drain();
         QCOMPARE(keys.size(), size_t(4));
-        QCOMPARE(keys[0].scancode, SDL_SCANCODE_LALT);
+        QCOMPARE(keys[0].code, kVK_Option);
         QVERIFY(keys[0].down);
-        QCOMPARE(keys[1].scancode, SDL_SCANCODE_TAB);
-        QVERIFY(keys[1].mod & SDL_KMOD_LALT);
+        QCOMPARE(keys[1].code, kVK_Tab);
+        QVERIFY(keys[1].modifiers & Qt::AltModifier);
         QVERIFY(keys[1].down && !keys[2].down && !keys[3].down);
     }
     void qtDispatcherCoalescesWithoutSdlWakeEvents()

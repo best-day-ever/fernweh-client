@@ -9,6 +9,7 @@
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickWindow>
+#include <QSet>
 #include <QTimer>
 #include <QVariantMap>
 #include <functional>
@@ -116,6 +117,7 @@ public:
     void cancelInput();
     Q_INVOKABLE void moveToolbar(qreal logicalLeft);
     Q_INVOKABLE void toggleFullscreen();
+    Q_INVOKABLE void toggleToolbar();
     Q_INVOKABLE void fullscreenDisplays(bool span) { cancelInput(); emit fullscreenDisplaysRequested(span); }
     Q_INVOKABLE void minimize();
     Q_INVOKABLE void openNewConnection();
@@ -214,6 +216,7 @@ private:
     Qt::MouseButtons m_LocalButtons;
     struct Key { quint32 scanCode; int key; Qt::KeyboardModifiers modifiers; };
     QMap<quint64, Key> m_RemoteKeys;
+    QSet<quint64> m_LocalShortcutKeys;
     bool m_RemoteInputEnabled = false;
     bool m_PointerPresent = false;
     bool m_ToolbarVisible = false;

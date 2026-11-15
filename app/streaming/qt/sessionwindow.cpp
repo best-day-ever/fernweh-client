@@ -177,6 +177,16 @@ void QtSessionWindow::setPinned(bool pinned)
     emit toolbarChanged();
 }
 
+void QtSessionWindow::toggleToolbar()
+{
+    const bool visible = !m_ToolbarVisible;
+    cancelInput();
+    m_RevealTimer.stop();
+    m_HideTimer.stop();
+    setToolbarVisible(visible);
+    if (visible) scheduleHide();
+}
+
 void QtSessionWindow::setWaiting(bool waiting)
 {
     if (m_Waiting == waiting) return;
@@ -483,9 +493,11 @@ void QtSessionWindow::keyPressEvent(QKeyEvent* event)
         const int shortcut = qtSessionShortcut(qtPhysicalKey(event), event->key(), qtPhysicalModifiers(event->modifiers()));
         // Disconnect is local even during startup, released input or a Host
         // timeout. It must not depend on a healthy remote input channel.
-        if (shortcut == Qt::Key_Q || (!m_Waiting && shortcut == Qt::Key_Z)) {
+        if (shortcut == Qt::Key_Q || shortcut == Qt::Key_T || (!m_Waiting && shortcut == Qt::Key_Z)) {
             if (!event->isAutoRepeat()) {
+                m_LocalShortcutKeys.insert(keyIdentity(event));
                 if (shortcut == Qt::Key_Q) disconnectSession();
+                else if (shortcut == Qt::Key_T) toggleToolbar();
                 else emit inputRecaptureRequested();
             }
             event->accept();
@@ -508,6 +520,10 @@ void QtSessionWindow::keyReleaseEvent(QKeyEvent* event)
 {
     if (m_NativeKeyCapture && m_NativeKeyCapture()) { event->accept(); return; }
     const auto id = keyIdentity(event);
+    if (m_LocalShortcutKeys.contains(id)) {
+        if (!event->isAutoRepeat()) m_LocalShortcutKeys.remove(id);
+        event->accept(); return;
+    }
     if (m_RemoteKeys.contains(id)) {
         // X11 auto-repeat can synthesize release/press pairs; held ownership
         // lasts until the real release on both X11 and Wayland.

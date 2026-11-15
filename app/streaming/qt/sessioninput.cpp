@@ -30,6 +30,14 @@ QtSessionInput::QtSessionInput(QObject* parent) : QObject(parent)
         return m_Enabled && m_SystemKeys && (m_NativeFocus ? m_NativeFocus() : m_Focused);
     };
     m_MacKeys = std::make_unique<MacKeyboardCapture>(ownsKeyboard, [this] { releaseAll(); });
+    m_MacKeys->setLocalHotkeyHandler([this, ownsKeyboard](const MacKeyEvent& event) {
+        const int shortcut = qtSessionShortcut(event.code, int(qtRemoteKey(event.code).vk), event.modifiers);
+        if (shortcut != Qt::Key_Q && shortcut != Qt::Key_T) return false;
+        if (!event.down || event.repeat) return true;
+        return QMetaObject::invokeMethod(this, [this, ownsKeyboard, shortcut] {
+            if (ownsKeyboard() && m_MacKeys->capturesKeys()) emit shortcutRequested(shortcut);
+        }, Qt::QueuedConnection);
+    });
     // Preserve ordinary menu/Dock Quit, but never let a remotely forwarded
     // Command-Q also activate the local application's Quit shortcut.
     m_MacQuit = std::make_unique<MacQuitShortcut>(ownsKeyboard);

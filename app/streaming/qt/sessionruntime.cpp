@@ -1040,6 +1040,9 @@ void QtSessionRuntime::handleShortcut(int key)
         stop(); break;
     case Qt::Key_Z: m_InputGrabbed = !m_InputGrabbed; setInputEnabled(m_Session->m_Lifecycle.streaming() && m_InputGrabbed); break;
     case Qt::Key_X: surface.toggleFullscreen(); break;
+    case Qt::Key_T:
+        for (auto& shell : m_Windows) if (shell->ownsKeyboard()) { shell->surface().toggleToolbar(); return; }
+        surface.toggleToolbar(); break;
     case Qt::Key_S:
     {
         const bool show = !surface.statisticsVisible();
