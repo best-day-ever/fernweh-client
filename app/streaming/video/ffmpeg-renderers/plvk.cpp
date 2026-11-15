@@ -308,15 +308,6 @@ bool PlVkRenderer::tryInitializeDevice(VkPhysicalDevice device, VkPhysicalDevice
         else if (decoderParams->videoFormat & VIDEO_FORMAT_MASK_H265) {
             videoDecodeExtension = VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME;
         }
-        else if (decoderParams->videoFormat & VIDEO_FORMAT_MASK_AV1) {
-            // FFmpeg 6.1 implemented an early Mesa extension for Vulkan AV1 decoding.
-            // FFmpeg 7.0 replaced that implementation with one based on the official extension.
-#if LIBAVCODEC_VERSION_MAJOR >= 61
-            videoDecodeExtension = VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME;
-#else
-            videoDecodeExtension = "VK_MESA_video_decode_av1";
-#endif
-        }
         else {
             SDL_assert(false);
             return false;
@@ -1258,8 +1249,7 @@ int PlVkRenderer::getDecoderColorRange()
 
 int PlVkRenderer::getDecoderCapabilities()
 {
-    return CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC |
-           CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
+    return CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC;
 }
 
 bool PlVkRenderer::needsTestFrame()
