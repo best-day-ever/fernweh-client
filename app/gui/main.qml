@@ -321,6 +321,7 @@ ApplicationWindow {
                 color: theme.textSecondary
                 font.pointSize: 9
                 font.weight: Font.Medium
+                Layout.fillWidth: true
                 Layout.minimumWidth: 0
                 Layout.maximumWidth: implicitWidth
                 elide: Text.ElideRight
