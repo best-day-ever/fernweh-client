@@ -209,7 +209,13 @@ public:
     // signals; ordinary sessions keep their existing SDL event dispatch.
     static void requestSessionQuit(SessionDiagnostics::End reason = SessionDiagnostics::End::Unknown);
     static void requestDecoderReset();
-    bool usesQtPresentation() const { return m_RendererFactory != nullptr; }
+    bool usesQtPresentation() const {
+#ifdef PLANK_QT_SESSION
+        return true;
+#else
+        return false;
+#endif
+    }
 
     void updateRenderedStats(float fps, float videoMbps)
     {
@@ -629,6 +635,7 @@ private:
     };
     QVector<ClientDisplaySnapshot> m_ClientDisplays;
     GuiDisplaySnapshot m_GuiDisplaySnapshot;
+    std::function<bool()> m_QtPreparePresentation;
     QVector<NvClientDisplay> m_ClientDisplayProbe;
     QRect m_QtTargetDisplayBounds;
     // The plan's primary display: the stream window opens there.

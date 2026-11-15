@@ -66,6 +66,55 @@ Item {
         font.pixelSize: 16
     }
 
+    Rectangle {
+        objectName: "screensPrompt"
+        z: 3
+        visible: sessionWindow.toolbarVisible && sessionWindow.screensPrompt.length > 0 && !sessionWindow.waiting
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: 47
+        width: Math.min(parent.width - 24, 760)
+        height: screensRow.implicitHeight + 16
+        radius: 5
+        color: "#2b3038"
+        RowLayout {
+            id: screensRow
+            anchors.fill: parent
+            anchors.margins: 8
+            Text {
+                Layout.fillWidth: true
+                text: sessionWindow.screensPrompt
+                color: "#f1f2f5"
+                wrapMode: Text.Wrap
+            }
+            PromptButton { objectName: "screensSetupButton"; text: qsTr("Set up…"); focusPolicy: Qt.NoFocus; onClicked: sessionWindow.setupScreens() }
+            PromptButton { objectName: "screensKeepButton"; text: qsTr("Keep"); focusPolicy: Qt.NoFocus; onClicked: sessionWindow.keepScreens() }
+            PromptButton { primaryAction: true; objectName: "screensApplyButton"; text: qsTr("Apply"); focusPolicy: Qt.NoFocus; onClicked: sessionWindow.applyScreens() }
+        }
+    }
+
+    component PromptButton: T.Button {
+        id: promptControl
+        property bool primaryAction: false
+        implicitWidth: Math.max(72, contentItem.implicitWidth + 20)
+        implicitHeight: 32
+        padding: 8
+        hoverEnabled: true
+        focusPolicy: Qt.NoFocus
+        Accessible.name: text
+        background: Rectangle {
+            radius: 4
+            color: promptControl.primaryAction ? (promptControl.down ? "#276ca7" : "#347fbf") :
+                (promptControl.down ? "#525862" : promptControl.hovered ? "#444a53" : "transparent")
+        }
+        contentItem: Text {
+            text: promptControl.text
+            color: "#f1f2f5"
+            font.pixelSize: 13
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
     // Own the compact control's geometry instead of inheriting Material's
     Text {
         anchors.horizontalCenter: parent.horizontalCenter

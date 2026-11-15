@@ -12,7 +12,10 @@ using QtPlatformSessionShell = QtSessionShell;
 #include "videopresenter.h"
 #include "decodedvideorenderer.h"
 #include "sessioninput.h"
+#include "sessionlayout.h"
+#include "../clientdisplaychange.h"
 #include <QPointer>
+#include <QHash>
 #include <QThread>
 #include <QTimer>
 #include <atomic>
@@ -50,6 +53,13 @@ private:
     void beginRecovery();
     void setStatus(const QString& text);
     bool snapshotDisplays();
+    void addWindow(QScreen* screen, const QString& key, bool primary, QSize desktop);
+    bool preparePresentation(); // session worker, cancellable GUI acknowledgement
+    bool applyPresentation(const QtSessionLayout& layout, const QVector<NvClientDisplay>& probe);
+    void observeDisplays();
+    void applyDisplayLayout();
+    void updateScreensPrompt();
+    QtPlatformSessionShell* windowForKey(const QString& key) const;
     void updateFocus();
     void setInputEnabled(bool enabled);
     void handleShortcut(int key);
@@ -97,4 +107,15 @@ private:
     QString m_DisplayNotice;
     quint64 m_DisplayNoticeDeadline = 0;
     bool m_ConfinePointer = true;
+    QtSessionLayout m_Layout;
+    QtSessionLayoutHandoff m_LayoutHandoff;
+    QHash<QtPlatformSessionShell*, QtSessionLayout::Output> m_Views;
+    QVector<NvClientDisplay> m_LayoutProbe;
+    QVector<NvClientDisplay> m_ObservedProbe;
+    ClientDisplayChange m_DisplayChanges;
+    QTimer m_DisplayDebounce;
+    bool m_BaselineApplied = false;
+    bool m_MarkApplied = false;
+    bool m_CollapsedDisplay = false;
+    std::atomic_bool m_ApplyLayoutRequested{false};
 };

@@ -63,6 +63,7 @@ QtSessionWindow::QtSessionWindow(QWindow* parent, QQuickRenderControl* renderCon
     connect(this, &QWindow::heightChanged, this, &QtSessionWindow::synchronizeSceneSize);
     if (rootObject()) {
         m_Toolbar = rootObject()->findChild<QQuickItem*>(QStringLiteral("sessionToolbar"));
+        m_ScreensPrompt = rootObject()->findChild<QQuickItem*>(QStringLiteral("screensPrompt"));
         m_TabletCursor = new QtTabletCursorItem(rootObject());
         m_TabletCursor->setVisible(false);
     }
@@ -77,8 +78,7 @@ QtSessionWindow::QtSessionWindow(QWindow* parent, QQuickRenderControl* renderCon
         }
     });
     connect(&m_HideTimer, &QTimer::timeout, this, [this] {
-        if (!m_Pinned && !m_DisplayMenuOpen && !m_LocalButtons &&
-                (!m_PointerPresent || !overToolbar(m_Pointer))) {
+        if (!m_Pinned && !m_DisplayMenuOpen && !m_LocalButtons) {
             setToolbarVisible(false);
         }
     });
@@ -155,7 +155,7 @@ void QtSessionWindow::updateTabletCursor()
     QPointF point;
     const bool visible = m_RemoteInputEnabled && !m_Waiting && !m_DisplayMenuOpen && (m_TabletActive || m_PointerCaptured) && !m_EmbeddedCursor &&
         m_HostCursorVisible && m_HostPositionValid && !m_CursorImage.isNull() &&
-        m_Geometry.fromStream(m_HostCursorPosition, point);
+        m_Geometry.fromCapture(m_HostCursorPosition, point);
     m_TabletCursor->setVisible(visible);
     if (!visible) return;
     const qreal sx = m_Geometry.destinationPixels.width() / m_Geometry.sourcePixels.width() * width() / m_Geometry.drawableSize.width();
@@ -259,8 +259,10 @@ void QtSessionWindow::disconnectSession()
 
 bool QtSessionWindow::overToolbar(const QPointF& position) const
 {
-    return m_Toolbar && m_Toolbar->isVisible() &&
-            m_Toolbar->contains(m_Toolbar->mapFromScene(position));
+    return (m_Toolbar && m_Toolbar->isVisible() &&
+            m_Toolbar->contains(m_Toolbar->mapFromScene(position))) ||
+           (m_ScreensPrompt && m_ScreensPrompt->isVisible() &&
+            m_ScreensPrompt->contains(m_ScreensPrompt->mapFromScene(position)));
 }
 
 bool QtSessionWindow::localPointer(const QPointF& position) const
@@ -278,7 +280,7 @@ void QtSessionWindow::setToolbarVisible(bool visible)
 
 void QtSessionWindow::scheduleHide()
 {
-    if (m_Pinned || m_DisplayMenuOpen || m_LocalButtons || (m_PointerPresent && overToolbar(m_Pointer))) {
+    if (m_Pinned || m_DisplayMenuOpen || m_LocalButtons) {
         m_HideTimer.stop();
     } else if (m_ToolbarVisible && !m_HideTimer.isActive()) {
         m_HideTimer.start();
