@@ -196,6 +196,7 @@ bool QtSessionRuntime::snapshotDisplays()
         display.matchTarget = NvOutputTopology::clientMatchTarget(display.probeView);
 #endif
         display.primary = screen->name() == selection.target;
+        display.legacySelected = selection.names.contains(screen->name());
         if (display.primary) session.m_TargetDisplayId = display.displayId;
         session.m_ClientDisplays.append(display);
     }
@@ -204,7 +205,8 @@ bool QtSessionRuntime::snapshotDisplays()
         return std::make_pair(a.logicalBounds.x, a.logicalBounds.y) < std::make_pair(b.logicalBounds.x, b.logicalBounds.y);
     });
     if (!session.m_TargetDisplayId) session.m_TargetDisplayId = displays.first().displayId;
-    session.m_MultiDisplayPresentationAvailable = displays.size() > 1;
+    session.m_MultiDisplayPresentationAvailable = std::count_if(displays.cbegin(), displays.cend(),
+        [](const auto& display) { return display.legacySelected; }) > 1;
     m_SpanDisplays = selection.names.size() > 1;
     int x = 0;
     for (auto& display : displays) {
@@ -989,6 +991,8 @@ void QtSessionRuntime::selectFullscreenDisplays(bool span, QtPlatformSessionShel
             m_Presenter->setPrimaryOutput(&m_Windows.front()->surface());
         }
         m_Fullscreen = true;
+        for (auto& shell : m_Windows)
+            shell->surface().setDisplayMode(m_Layout.outputs.size() > 1, span);
         showPresentationWindows(); updateGeometry(); updateFocus();
         return;
     }

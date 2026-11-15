@@ -3424,27 +3424,10 @@ QSize Session::configurePlankDisplayMode()
         return selected;
     }
 
-    QSize detectedResolution;
-
-    if (m_UseMultiDisplayPresentation) {
-        int width = 0;
-        int height = 0;
-        for (const auto& display : std::as_const(m_ClientDisplays)) {
-            width += display.matchTarget.width();
-            height = qMax(height, display.matchTarget.height());
-        }
-        detectedResolution = QSize(width, height);
-    }
-    else {
-        // The match target, not the panel: the client presents into the
-        // desktop backing, so a larger stream would only cost bitrate.
-        for (const auto& display : std::as_const(m_ClientDisplays)) {
-            if (display.displayId == m_TargetDisplayId) {
-                detectedResolution = display.matchTarget;
-                break;
-            }
-        }
-    }
+    // The selected match targets, not every connected panel: discovery also
+    // retains monitors excluded by a bookmark or a saved display profile.
+    const QSize detectedResolution = PlankDisplayMode::detectedClientResolution(
+        m_ClientDisplays, m_TargetDisplayId, m_UseMultiDisplayPresentation, m_DisplayPlan.ok);
 
     QSize nativeCanvasResolution;
     {
