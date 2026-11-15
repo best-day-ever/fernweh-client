@@ -112,6 +112,7 @@ public:
     Q_INVOKABLE void disconnectSession();
     Q_INVOKABLE void toggleMicrophone() { emit microphoneRequested(); }
     Q_INVOKABLE void toggleCamera() { emit cameraRequested(); }
+    Q_INVOKABLE void chooseFiles() { emit filesRequested(); }
     Q_INVOKABLE void toggleStatistics() { setStatisticsVisible(!statisticsVisible()); }
 
 signals:
@@ -143,6 +144,7 @@ signals:
     void remotePenCancelled();
     void immersiveMouseRequested();
     void immersiveMouseChanged();
+    void filesRequested();
     void bitrateRequested(int kbps);
     void disconnectRequested();
 

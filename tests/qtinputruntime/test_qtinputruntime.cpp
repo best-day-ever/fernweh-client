@@ -87,20 +87,22 @@ extern "C" int LiSendUtf8TextEvent(const char*, unsigned int) { return 0; }
 extern "C" int LiSendPenEvent(uint8_t, uint8_t, uint8_t, float, float, float, float, float, uint16_t, uint8_t) { return 0; }
 class MacRawWacomInput::Impl {};
 MacRawWacomInput::MacRawWacomInput(std::function<void()> activity, std::function<bool()> before, std::function<void()> after) {
+    tabletCall("raw-create");
     registerTabletActivity(std::move(activity));
     tabletBeforePointer = std::move(before); tabletAfterPointer = std::move(after);
 }
-MacRawWacomInput::~MacRawWacomInput() { registerTabletActivity({}); tabletBeforePointer = {}; tabletAfterPointer = {}; }
-void MacRawWacomInput::setActive(bool) {}
-void MacRawWacomInput::beginReconnect() {}
-void MacRawWacomInput::finishReconnect() {}
+MacRawWacomInput::~MacRawWacomInput() { tabletCall("raw-destroy"); registerTabletActivity({}); tabletBeforePointer = {}; tabletAfterPointer = {}; }
+void MacRawWacomInput::setActive(bool active) { tabletCall(active ? "raw-active" : "raw-inactive"); }
+void MacRawWacomInput::beginReconnect() { tabletCall("raw-suspend"); }
+void MacRawWacomInput::finishReconnect() { tabletCall("raw-resume"); }
 void MacRawWacomInput::handleControl(const unsigned char*, unsigned int) {}
 struct MacKeyboardCapture::State {};
 MacKeyboardCapture::MacKeyboardCapture(std::function<bool()>, std::function<void()>) {}
 MacKeyboardCapture::~MacKeyboardCapture() = default;
 void MacKeyboardCapture::refresh() {}
+bool MacKeyboardCapture::capturesKeys() const { return false; }
 void MacKeyboardCapture::setQueueWake(std::function<bool()>) {}
-void MacKeyboardCapture::dispatchPending(const std::function<void(SDL_KeyboardEvent*)>&) {}
+void MacKeyboardCapture::dispatchPending(const std::function<void(const MacKeyEvent&)>&) {}
 bool MacKeyboardCapture::suppressSdlKeyEvent() const { return false; }
 struct MacQuitShortcut::State {};
 MacQuitShortcut::MacQuitShortcut(std::function<bool()>) {}
@@ -142,6 +144,33 @@ private slots:
         tabletCalls.clear(); tabletUsedGui = false; normalized = false;
         tabletActivityHandler = {};
         qunsetenv("PLANK_EXTERNAL_WACOM_BRIDGE");
+    }
+    void pasteWaitsForClipboardPublicationAndConsumesItsKeyRelease()
+    {
+        Fixture f;
+        int requests = 0;
+        f.input.setPasteHandler([&] { ++requests; return true; });
+#ifdef Q_OS_MACOS
+        constexpr quint32 scan = 9;
+#else
+        constexpr quint32 scan = 55;
+#endif
+        f.input.key(scan, Qt::Key_V, true, false, Qt::ControlModifier);
+        f.input.key(scan, Qt::Key_V, false, false, Qt::ControlModifier);
+        QCOMPARE(requests, 1);
+        QVERIFY(wire.isEmpty());
+        f.input.setPasteHandler([&] { ++requests; return false; });
+        f.input.key(scan, Qt::Key_V, true, false, Qt::ControlModifier);
+        f.input.key(scan, Qt::Key_V, false, false, Qt::ControlModifier);
+        QCOMPARE(requests, 2);
+        QCOMPARE(wire.size(), 2);
+        QCOMPARE(wire[0].a, 0x56);
+        QCOMPARE(wire[0].b, int(KEY_ACTION_DOWN));
+        QCOMPARE(wire[1].b, int(KEY_ACTION_UP));
+        f.input.setEnabled(false);
+        f.input.key(scan, Qt::Key_V, true, false, Qt::ControlModifier);
+        f.input.pasteText();
+        QCOMPARE(requests, 2);
     }
     void pointerDragHasOrderedDeltasAndAuthoritativeEnd()
     {
@@ -479,8 +508,10 @@ private slots:
         QTest::addColumn<bool>("pending");
         QTest::newRow("raw-active") << false << false;
         QTest::newRow("raw-pending") << false << true;
+#ifndef Q_OS_MACOS
         QTest::newRow("normalized-active") << true << false;
         QTest::newRow("normalized-pending") << true << true;
+#endif
     }
     void wheelRepositionsAfterTablet()
     {
@@ -510,7 +541,9 @@ private slots:
     {
         QTest::addColumn<bool>("pen");
         QTest::newRow("descriptor-driven-raw") << false;
+#ifndef Q_OS_MACOS
         QTest::newRow("normalized-first-generation") << true;
+#endif
     }
     void tabletLifecycle()
     {
@@ -535,6 +568,9 @@ private slots:
     }
     void externalTabletBridgeDoesNotOpenASecondReader()
     {
+#ifdef Q_OS_MACOS
+        QSKIP("External bridge selection belongs to the Linux tablet adapter");
+#endif
         qputenv("PLANK_EXTERNAL_WACOM_BRIDGE", "1");
         { Fixture f; f.start(LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND | LI_FF_PEN_TOUCH_EVENTS); }
         std::lock_guard<std::mutex> lock(tabletMutex);

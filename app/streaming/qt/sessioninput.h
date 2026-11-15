@@ -64,6 +64,7 @@ public:
     void releaseAll();
     void activateMouse();
     void pasteText();
+    void setPasteHandler(std::function<bool()> handler) { m_PasteHandler = std::move(handler); }
 #ifdef Q_OS_MACOS
     void normalizedPen(QPointF position, float pressure, float rotation, int xTilt, int yTilt, bool eraser, int buttons);
     bool capturesNativeKeys() const;
@@ -104,6 +105,7 @@ private:
     };
     void deferPointer(DeferredPointer event);
 
+    std::function<bool()> m_PasteHandler;
     PlankRemoteCursor m_Cursor;
     PlankCallbackTarget<QtRawWacomInput> m_RawControl;
     std::atomic<std::uint64_t> m_StreamSize{0};

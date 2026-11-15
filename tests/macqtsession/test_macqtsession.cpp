@@ -133,6 +133,16 @@ private slots:
         QCOMPARE(disconnects.count(), 0);
         QCOMPARE(buttons.count(), 2); // New connection is a local control.
 
+        scene.setTelemetry({{QStringLiteral("fileTransferEnabled"), true}});
+        auto* sendFiles = scene.rootObject()->findChild<QQuickItem*>("sendFilesButton");
+        QVERIFY(sendFiles);
+        QSignalSpy fileChoices(&scene, &QtSessionWindow::filesRequested);
+        const auto filePoint = sendFiles->mapToScene(sendFiles->boundingRect().center());
+        pointer(scene, QEvent::MouseButtonPress, filePoint, Qt::LeftButton);
+        pointer(scene, QEvent::MouseButtonRelease, filePoint, Qt::LeftButton);
+        QCOMPARE(fileChoices.size(), 1);
+        QCOMPARE(buttons.count(), 2);
+
         const QPointingDevice pen(QStringLiteral("test pen"), 1, QInputDevice::DeviceType::Stylus,
             QPointingDevice::PointerType::Pen, QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1, 3);
         const auto tablet = [&](QEvent::Type type, QPointF position, bool down) {

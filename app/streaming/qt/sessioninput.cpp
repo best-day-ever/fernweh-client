@@ -500,6 +500,13 @@ void QtSessionInput::key(quint32 scan, int key, bool down, bool repeat, Qt::Keyb
         deferPointer(event); return;
     }
     auto mapped = qtRemoteKey(scan);
+    if (down && m_Enabled && mapped.vk == 0x56 && (modifiers & Qt::ControlModifier) &&
+        !(modifiers & (Qt::AltModifier | Qt::MetaModifier | Qt::ShiftModifier)) &&
+        m_PasteHandler && m_PasteHandler()) {
+        releaseAll();
+        m_ShortcutKeys.insert(scan);
+        return;
+    }
     if (down) {
         if (!m_Enabled || !mapped.vk || ((mapped.vk == 0x5b || mapped.vk == 0x5c) && !m_SystemKeys)) return;
         m_Keys.insert(scan, mapped);
@@ -570,6 +577,7 @@ void QtSessionInput::pasteText()
 {
     if (!m_Enabled) return;
     releaseAll();
+    if (m_PasteHandler && m_PasteHandler()) return;
     auto text = QGuiApplication::clipboard()->text().replace(QStringLiteral("\r\n"), QStringLiteral("\n")).toUtf8();
     if (text.size() <= 512 * 1024) LiSendUtf8TextEvent(text.constData(), unsigned(text.size()));
 }

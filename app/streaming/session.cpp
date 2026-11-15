@@ -333,9 +333,6 @@ void Session::clCursorPosition(const unsigned char* data, unsigned int length)
     if (s_ActiveSession) {
         s_ActiveSession->m_QtInputCallbacks.invoke([&](QtSessionInput& input) { input.handleCursorPosition(data, length); });
     }
-#ifdef PLANK_QT_SESSION
-    s_ActiveSession->m_QtInputCallbacks.invoke([&](QtSessionInput& input) { input.handleCursorPosition(data, length); });
-#endif
     s_ActiveSession->m_InputCallbacks.invoke([&](SdlInputHandler& input) {
         if (input.handleRemoteCursorPosition(data, length)) {
             SDL_Event event = {};
@@ -447,10 +444,8 @@ bool Session::chooseDecoder(int videoFormat, int width, int height,
 
 QString Session::decoderFailureMessage(int videoFormat)
 {
-    if (videoFormat & VIDEO_FORMAT_MASK_H265) {
-        return tr("The selected HEVC profile requires hardware decoding, but this Client could not initialize it at the requested resolution, bit depth and color format. Check the Client graphics driver or choose a supported H.264 profile if the Host offers one.");
-    }
-    return tr("This Client cannot decode and present the selected PLANK encoding profile.");
+    Q_UNUSED(videoFormat);
+    return tr("This Client cannot decode and present the selected encoding profile with its exact resolution, bit depth and color format.");
 }
 
 bool Session::isIdentityGbrEnabledForFormat(int videoFormat) const
@@ -1447,10 +1442,14 @@ void Session::plankTransportDataReceiveLoop()
                     // The transport sender observes a downgrade immediately;
                     // SDL input capture and all presentation UI follow on the
                     // main event thread, including already queued input.
+#ifdef PLANK_QT_SESSION
+                    emit qtCollaborationChanged();
+#else
                     SDL_Event event {};
                     event.type = SDL_EVENT_USER;
                     event.user.code = SDL_CODE_PLANK_COLLABORATION_PERMISSION;
                     SDL_PushEvent(&event);
+#endif
                 }
                 break;
             }
@@ -1652,21 +1651,13 @@ void Session::createClipboardSync()
 #ifdef PLANK_TRANSPORT
     if (!m_ClipboardSync) {
         m_ClipboardSync = std::make_unique<ClipboardSync>(
-                    [this](const std::uint8_t* payload, std::size_t size) {
-                        return plankTransportNativeInputSender(
-                                   m_PlankTransportEndpoint,
-                                   PLANK_TRANSPORT_INPUT_CLIPBOARD_OFFER,
-                                   payload,
-                                   size) == PLANK_TRANSPORT_OK;
-                    },
-                    [this] {
-                        return m_QtClipboardFocused.load();
-                    },
-                    [this] { return clipboardSyncEnabled(); },
-                    [] {
-                        // Qt's session timer drains the bounded pending value.
-                        return true;
-                    });
+            [this](const std::uint8_t* payload, std::size_t size) {
+                return plankTransportNativeInputSender(m_PlankTransportEndpoint,
+                    PLANK_TRANSPORT_INPUT_CLIPBOARD_OFFER, payload, size) == PLANK_TRANSPORT_OK;
+            },
+            [this] { return anyPresentationWindowFocused(); },
+            [this] { return clipboardSyncEnabled(); },
+            [this] { queueClipboardEvent(SDL_CODE_PLANK_CLIPBOARD); return true; });
     }
 #endif
 }
@@ -1680,33 +1671,25 @@ void Session::startClipboardSync()
     createClipboardSync();
     m_ClipboardSync->start();
 #ifdef PLANK_TRANSPORT
-    if (m_FileClipboardMode != QStringLiteral("off") && !m_FileClipboard) {
+    if (m_FileClipboardMode != QStringLiteral("off") && !fileClipboard()) {
         const auto generation = ++m_ClipboardEventGeneration;
-        m_FileClipboard = std::make_unique<PlatformFileClipboard>(
+        auto files = std::make_shared<PlatformFileClipboard>(
                     m_PlankTransportEndpoint,
                     m_FileClipboardMode.toStdString(),
-                    [generation] {
-                        SDL_Event event {};
-                        event.type = SDL_EVENT_USER;
-                        event.user.data1 = reinterpret_cast<void*>(generation);
-                        event.user.code = SDL_CODE_PLANK_FILE_CLIPBOARD_READY;
-                        event.user.timestamp = SDL_GetTicks();
-                        return SDL_PushEvent(&event);
+                    [this, generation] {
+                        queueClipboardEvent(SDL_CODE_PLANK_FILE_CLIPBOARD_READY, generation);
                     },
-                    [generation] {
-                        SDL_Event event {};
-                        event.type = SDL_EVENT_USER;
-                        event.user.data1 = reinterpret_cast<void*>(generation);
-                        event.user.code = SDL_CODE_PLANK_FILE_CLIPBOARD_PUBLISH;
-                        event.user.timestamp = SDL_GetTicks();
-                        return SDL_PushEvent(&event);
+                    [this, generation] {
+                        queueClipboardEvent(SDL_CODE_PLANK_FILE_CLIPBOARD_PUBLISH, generation);
+                        return true;
                     }
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
                     , [this] { return anyPresentationWindowFocused(); }
 #endif
                     );
+        std::atomic_store(&m_FileClipboard, std::move(files));
     }
-    if (m_FileClipboard) m_FileClipboard->start();
+    if (const auto files = fileClipboard()) files->start();
 #endif
     qInfo() << "Started PLANK clipboard sync";
 #endif
@@ -1721,10 +1704,8 @@ void Session::stopClipboardSync()
         m_ClipboardSync->stop();
     }
 #ifdef PLANK_TRANSPORT
-    if (m_FileClipboard) {
-        m_FileClipboard->stop();
-        m_FileClipboard.reset();
-    }
+    if (const auto files = std::atomic_exchange(&m_FileClipboard, std::shared_ptr<FileClipboard>()))
+        files->stop();
 #endif
 }
 
@@ -1741,8 +1722,9 @@ bool Session::deferTextClipboardPasteOnMainThread()
 
 bool Session::beginFileClipboardPasteOnMainThread()
 {
-    return m_FileClipboard != nullptr && anyPresentationWindowFocused() &&
-            m_FileClipboard->beginPasteOnMainThread();
+    const auto files = fileClipboard();
+    return files && clipboardSyncEnabled() && anyPresentationWindowFocused() &&
+            files->beginPasteOnMainThread();
 }
 
 void Session::injectRemoteFilePasteOnMainThread()
@@ -1756,19 +1738,70 @@ void Session::injectRemoteFilePasteOnMainThread()
 }
 #endif
 
+void Session::queueClipboardEvent(int code, std::uintptr_t generation)
+{
+    if (usesQtPresentation()) {
+        QMetaObject::invokeMethod(this, [this, code, generation] {
+            dispatchClipboardEvent(code, generation);
+        }, Qt::QueuedConnection);
+        return;
+    }
+    SDL_Event event {};
+    event.type = SDL_EVENT_USER;
+    event.user.code = code;
+    event.user.data1 = reinterpret_cast<void*>(generation);
+    SDL_PushEvent(&event);
+}
+
+void Session::pollClipboardOnMainThread()
+{
+    if (m_ClipboardSync) {
+        m_ClipboardSync->applyPendingHostTextOnMainThread();
+        const bool ready = m_ClipboardSync->pollLocalClipboardOnMainThread();
+        if (m_TextClipboardPastePending) {
+            if (!clipboardSyncEnabled() || !anyPresentationWindowFocused()) m_TextClipboardPastePending = false;
+            else if (ready) {
+                m_TextClipboardPastePending = false;
+                injectRemoteFilePasteOnMainThread();
+            }
+        }
+    }
+#ifdef PLANK_TRANSPORT
+    if (const auto files = fileClipboard()) {
+        files->pollLocalClipboardOnMainThread();
+        files->publishPendingHostFilesOnMainThread();
+    }
+#endif
+}
+
+void Session::dispatchClipboardEvent(int code, std::uintptr_t generation)
+{
+    if (code == SDL_CODE_PLANK_CLIPBOARD_POLL) { pollClipboardOnMainThread(); return; }
+    if (code == SDL_CODE_PLANK_CLIPBOARD) {
+        if (m_ClipboardSync) m_ClipboardSync->applyPendingHostTextOnMainThread();
+        return;
+    }
+#ifdef PLANK_TRANSPORT
+    if (generation != m_ClipboardEventGeneration) return;
+    const auto files = fileClipboard();
+    if (!files) return;
+    if (code == SDL_CODE_PLANK_FILE_CLIPBOARD_READY && clipboardSyncEnabled() &&
+        anyPresentationWindowFocused() && files->takeReadyPasteOnMainThread())
+        injectRemoteFilePasteOnMainThread();
+    if (code == SDL_CODE_PLANK_FILE_CLIPBOARD_PUBLISH) files->publishPendingHostFilesOnMainThread();
+#endif
+}
+
 void Session::queueClipboardPollEvent()
 {
-    ClipboardPollTimer::queue(SDL_CODE_PLANK_CLIPBOARD_POLL);
+    queueClipboardEvent(SDL_CODE_PLANK_CLIPBOARD_POLL);
 }
 
 void Session::startClipboardPollTimer()
 {
-    if (m_ClipboardSync != nullptr &&
-            !m_ClipboardPollTimer.start(SDL_CODE_PLANK_CLIPBOARD_POLL)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "Failed to start clipboard poll timer: %s",
-                    SDL_GetError());
-    }
+    if (usesQtPresentation()) return; // The GUI-owned Qt session timer polls.
+    if (m_ClipboardSync && !m_ClipboardPollTimer.start(SDL_CODE_PLANK_CLIPBOARD_POLL))
+        qWarning() << "Failed to start clipboard poll timer:" << SDL_GetError();
 }
 
 void Session::stopClipboardPollTimer()
@@ -1993,9 +2026,8 @@ bool Session::validateLaunch()
         return false;
     }
 
-    // Probe the exact selected profile. H.264 may use software; HEVC must pass
-    // hardware decoding and presentation. Never silently substitute a profile.
-    const int selectedVideoFormat = m_SupportedVideoFormats.front();
+    // Probe exact-format hardware, then exact-format software. Never silently
+    // substitute the selected codec, chroma sampling or bit depth.
     while (!m_SupportedVideoFormats.isEmpty()) {
         const auto availability = getDecoderAvailability(
                     m_SupportedVideoFormats.front(),
@@ -2442,6 +2474,10 @@ void Session::rebuildPresentationLayout()
 
 void Session::updateCollaborationIndicator()
 {
+#ifdef PLANK_QT_SESSION
+    emit qtCollaborationChanged();
+    return;
+#endif
     if (!isCollaborator()) return;
     const bool viewOnly = m_CollaborationPermission.load() == PlankCollaboration::View;
     const QByteArray text = (viewOnly ? tr("Sharing with %1 - View only") :
@@ -2753,6 +2789,10 @@ bool Session::requestDisplayLayoutApply()
 void Session::applyDisplayLayout()
 {
     if (isCollaborator()) return;
+#ifdef PLANK_QT_SESSION
+    emit qtDisplayLayoutApplyRequested();
+    return;
+#endif
     SDL_Event event = {};
     event.type = SDL_EVENT_USER;
     event.user.code = SDL_CODE_PLANK_APPLY_SCREENS;
@@ -2878,6 +2918,9 @@ SDL_Window* Session::windowForEvent(Uint32 windowId) const
 
 bool Session::anyPresentationWindowFocused() const
 {
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+    if (usesQtPresentation()) return m_QtClipboardFocused.load();
+#endif
     if (m_Window != nullptr &&
             (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_INPUT_FOCUS)) {
         return true;
@@ -5685,54 +5728,11 @@ void Session::execInternal()
             }
             return true;
         case SDL_CODE_PLANK_CLIPBOARD:
-#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
-            if (m_ClipboardSync != nullptr) {
-                m_ClipboardSync->applyPendingHostTextOnMainThread();
-            }
-#endif
-            return true;
         case SDL_CODE_PLANK_CLIPBOARD_POLL:
-#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
-            if (m_ClipboardSync != nullptr) {
-                const bool ready = m_ClipboardSync->pollLocalClipboardOnMainThread();
-#ifdef PLANK_TRANSPORT
-                if (m_TextClipboardPastePending) {
-                    if (!anyPresentationWindowFocused()) m_TextClipboardPastePending = false;
-                    else if (ready) {
-                        m_TextClipboardPastePending = false;
-                        injectRemoteFilePasteOnMainThread();
-                    }
-                }
-#else
-                Q_UNUSED(ready);
-#endif
-            }
-#ifdef PLANK_TRANSPORT
-            if (m_FileClipboard != nullptr) {
-                m_FileClipboard->pollLocalClipboardOnMainThread();
-#ifdef Q_OS_WIN
-                m_FileClipboard->publishPendingHostFilesOnMainThread();
-#endif
-            }
-#endif
-#endif
-            return true;
         case SDL_CODE_PLANK_FILE_CLIPBOARD_READY:
-#if (defined(Q_OS_MACOS) || defined(Q_OS_WIN)) && defined(PLANK_TRANSPORT)
-            if (reinterpret_cast<std::uintptr_t>(userEvent.data1) == m_ClipboardEventGeneration &&
-                    m_FileClipboard && clipboardSyncEnabled() && anyPresentationWindowFocused()
-#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
-                    && m_FileClipboard->takeReadyPasteOnMainThread()
-#endif
-                    ) injectRemoteFilePasteOnMainThread();
-#endif
-            return true;
         case SDL_CODE_PLANK_FILE_CLIPBOARD_PUBLISH:
-#if (defined(Q_OS_MACOS) || defined(Q_OS_WIN)) && defined(PLANK_TRANSPORT)
-            if (m_FileClipboard != nullptr &&
-                    reinterpret_cast<std::uintptr_t>(userEvent.data1) == m_ClipboardEventGeneration) {
-                m_FileClipboard->publishPendingHostFilesOnMainThread();
-            }
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+            dispatchClipboardEvent(userEvent.code, reinterpret_cast<std::uintptr_t>(userEvent.data1));
 #endif
             return true;
         default:
@@ -5816,10 +5816,10 @@ void Session::execInternal()
                     m_Camera ? m_Camera->state() : PlankCamera::State::Off);
             }
 #if defined(Q_OS_MACOS) && defined(PLANK_TRANSPORT)
-            m_PlankToolbar->setFileTransferState(m_FileClipboard &&
+            m_PlankToolbar->setFileTransferState(fileClipboard() &&
                     (m_FileClipboardMode == QStringLiteral("bidirectional") ||
                      m_FileClipboardMode == QStringLiteral("client-to-host")),
-                    m_FileClipboard ? QString::fromStdString(m_FileClipboard->status()) : QString());
+                    fileClipboard() ? QString::fromStdString(fileClipboard()->status()) : QString());
 #endif
             const auto action = m_PlankToolbar->update(
                         SDL_GetTicks(), !m_Reconnecting.load());
@@ -6035,7 +6035,7 @@ void Session::execInternal()
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
                 m_TextClipboardPastePending = false;
 #if (defined(Q_OS_WIN) || defined(Q_OS_MACOS)) && defined(PLANK_TRANSPORT)
-                if (m_FileClipboard) m_FileClipboard->cancelPendingPasteOnMainThread();
+                if (const auto files = fileClipboard()) files->cancelPendingPasteOnMainThread();
 #endif
 #endif
                 }
@@ -6207,7 +6207,7 @@ void Session::execInternal()
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
                 m_TextClipboardPastePending = false;
 #if (defined(Q_OS_WIN) || defined(Q_OS_MACOS)) && defined(PLANK_TRANSPORT)
-                if (m_FileClipboard) m_FileClipboard->cancelPendingPasteOnMainThread();
+                if (const auto files = fileClipboard()) files->cancelPendingPasteOnMainThread();
 #endif
 #endif
                 }
@@ -6488,7 +6488,7 @@ void Session::execInternal()
 #if defined(Q_OS_MACOS) && defined(PLANK_TRANSPORT)
                 if (action == PlankToolbar::Action::SendFiles) {
                     m_InputHandler->raiseAllKeys();
-                    if (m_FileClipboard) m_FileClipboard->chooseFilesOnMainThread();
+                    if (const auto files = fileClipboard()) files->chooseFilesOnMainThread();
                     m_PlankToolbar->notifyFocusLost();
                     break;
                 }

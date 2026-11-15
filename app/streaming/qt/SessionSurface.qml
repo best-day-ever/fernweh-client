@@ -54,6 +54,18 @@ Item {
         styleColor: "#000000"
     }
 
+    Text {
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.margins: 20
+        visible: (sessionWindow.telemetry.collaborationText || "").length > 0
+        text: sessionWindow.telemetry.collaborationText || ""
+        color: "#82d9ff"
+        style: Text.Outline
+        styleColor: "#111111"
+        font.pixelSize: 16
+    }
+
     // Own the compact control's geometry instead of inheriting Material's
     Text {
         anchors.horizontalCenter: parent.horizontalCenter
@@ -190,6 +202,15 @@ Item {
                     qsTr("Release immersive mouse — Ctrl+Alt+Shift+M") :
                     qsTr("Capture mouse for 3D applications and games — Ctrl+Alt+Shift+M")
                 onClicked: sessionWindow.toggleImmersiveMouse()
+            }
+            ToolButton {
+                objectName: "sendFilesButton"
+                iconName: "sendFilesIcon"
+                iconSource: "icons/send-files.svg"
+                visible: sessionWindow.telemetry.fileTransferEnabled || false
+                ToolTip.text: sessionWindow.telemetry.fileTransferStatus || qsTr("Send files")
+                Accessible.name: qsTr("Send files")
+                onClicked: sessionWindow.chooseFiles()
             }
             StatReadout {
                 objectName: "fpsStat"

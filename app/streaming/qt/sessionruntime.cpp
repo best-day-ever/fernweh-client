@@ -6,6 +6,7 @@
 #include "../session.h"
 #include "../plankpresentation.h"
 #include "../../backend/hostrecovery.h"
+#include "../../backend/collaboration.h"
 #include "../../backend/clientdisplays.h"
 #include "../../backend/nvhttp.h"
 #include "../../settings/plankclientpolicy.h"
@@ -15,6 +16,7 @@
 #ifdef Q_OS_MACOS
 #include "../../macapplication.h"
 #include "../macclipboardsync.h"
+#include "../macfileclipboard.h"
 #include "../macdisplays.h"
 #endif
 
@@ -29,6 +31,13 @@
 QtSessionRuntime::QtSessionRuntime(Session* session) : QObject(session), m_Session(session)
 {
     m_Input = std::make_unique<QtSessionInput>();
+#ifdef Q_OS_MACOS
+    m_Input->setPasteHandler([this] {
+        if (!m_Session->clipboardSyncEnabled()) return true;
+        return m_Session->beginFileClipboardPasteOnMainThread() ||
+               m_Session->deferTextClipboardPasteOnMainThread();
+    });
+#endif
 #ifdef Q_OS_LINUX
     m_WindowGuard = std::make_unique<QtWaylandSessionGuard>();
     if (PlankClientPolicy().metrics().enabled) {
@@ -105,6 +114,11 @@ QtSessionRuntime::QtSessionRuntime(Session* session) : QObject(session), m_Sessi
 #ifdef Q_OS_MACOS
     connect(static_cast<MacApplication*>(qGuiApp), &MacApplication::exitRequested, this, &QtSessionRuntime::stop);
 #endif
+    connect(session, &Session::qtCollaborationChanged, this, [this] {
+        m_Input->releaseAll();
+        setInputEnabled(m_InputGrabbed);
+        updateFocus();
+    }, Qt::QueuedConnection);
     connect(session, &Session::qtQuitRequested, this, &QtSessionRuntime::stop, Qt::QueuedConnection);
     connect(session, &Session::qtDecoderResetRequested, this, [this] { request(Command::ResetDecoder); }, Qt::QueuedConnection);
     connect(session, &Session::qtReconnectRequested, this, [this] { request(Command::Reconnect); }, Qt::QueuedConnection);
@@ -295,6 +309,12 @@ void QtSessionRuntime::start(QWindow* launcher)
             m_TargetBitrate = bitrate; m_RecoveryBitrate.store(bitrate);
             m_BitrateChanged = PlankClock::milliseconds();
             for (auto& window : m_Windows) window->surface().setBitrateKbps(bitrate);
+        });
+        connect(&surface, &QtSessionWindow::filesRequested, this, [this] {
+#ifdef Q_OS_MACOS
+            if (m_Session->clipboardSyncEnabled())
+                if (const auto files = m_Session->fileClipboard()) files->chooseFilesOnMainThread();
+#endif
         });
         connect(&surface, &QtSessionWindow::microphoneRequested, this, [this] {
             m_Session->m_MicrophoneRequested.store(!m_Session->m_MicrophoneRequested.load());
@@ -674,6 +694,7 @@ void QtSessionRuntime::beginRecovery()
 
 void QtSessionRuntime::setInputEnabled(bool enabled)
 {
+    enabled = enabled && m_Session->m_CollaborationPermission.load() != PlankCollaboration::View;
     for (auto& shell : m_Windows) shell->surface().setRemoteInputEnabled(enabled);
     m_Input->setEnabled(enabled);
     updateFocus();
@@ -696,6 +717,7 @@ void QtSessionRuntime::updateFocus()
     const auto policy = m_CapturePolicy;
     const bool fullscreen = !m_Windows.empty() && m_Windows.front()->windowState() == Qt::WindowFullScreen;
     const bool captureAllowed = m_Session->m_Lifecycle.streaming() && m_InputGrabbed && !m_Session->m_Lifecycle.stopping() &&
+        m_Session->m_CollaborationPermission.load() != PlankCollaboration::View &&
         (policy == StreamingPreferences::CSK_ALWAYS || (policy == StreamingPreferences::CSK_FULLSCREEN && fullscreen));
 #ifdef Q_OS_MACOS
     // Keep policy separate from cached Qt focus. The native tap and Quit
@@ -826,10 +848,7 @@ void QtSessionRuntime::tick()
 {
     if (m_Session->m_Lifecycle.stopping()) return;
 #ifdef Q_OS_MACOS
-    if (m_Session->m_ClipboardSync) {
-        m_Session->m_ClipboardSync->applyPendingHostTextOnMainThread();
-        m_Session->m_ClipboardSync->pollLocalClipboardOnMainThread();
-    }
+    m_Session->pollClipboardOnMainThread();
 #endif
     if (m_Session->m_ReconnectGreeterConfirmed.exchange(false)) setStatus(tr("Returning to the sign-in screen…"));
     if (m_ReconnectNoticeDeadline && PlankClock::milliseconds() >= m_ReconnectNoticeDeadline) {
@@ -885,5 +904,17 @@ void QtSessionRuntime::tick()
             telemetry.insert(QStringLiteral("cameraState"), int(m_Session->m_Camera ? m_Session->m_Camera->state() : PlankCamera::State::Off));
         }
     }
+    const bool guest = m_Session->isCollaborator();
+    telemetry.insert(QStringLiteral("collaborationText"), guest ?
+        tr("Sharing with %1 · %2").arg(m_Session->m_CollaborationOwner,
+            m_Session->m_CollaborationPermission.load() == PlankCollaboration::View ?
+            tr("View only") : tr("Keyboard and mouse control")) : QString());
+#ifdef Q_OS_MACOS
+    const auto files = m_Session->fileClipboard();
+    telemetry.insert(QStringLiteral("fileTransferEnabled"), files && m_Session->clipboardSyncEnabled() &&
+        (m_Session->m_FileClipboardMode == QStringLiteral("client-to-host") ||
+         m_Session->m_FileClipboardMode == QStringLiteral("bidirectional")));
+    telemetry.insert(QStringLiteral("fileTransferStatus"), files ? QString::fromStdString(files->status()) : QString());
+#endif
     for (auto& shell : m_Windows) shell->surface().setTelemetry(telemetry);
 }

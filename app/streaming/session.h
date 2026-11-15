@@ -250,6 +250,8 @@ signals:
     void qtQuitRequested();
     void qtDecoderResetRequested();
     void qtReconnectRequested();
+    void qtCollaborationChanged();
+    void qtDisplayLayoutApplyRequested();
     void qtReconnectStatusChanged(QString text, bool warning);
     void stageStarting(QString stage);
 
@@ -359,6 +361,9 @@ private:
     void startClipboardPollTimer();
     void stopClipboardPollTimer();
     void queueClipboardPollEvent();
+    void queueClipboardEvent(int code, std::uintptr_t generation = 0);
+    void dispatchClipboardEvent(int code, std::uintptr_t generation = 0);
+    void pollClipboardOnMainThread();
     bool clipboardSyncEnabled() const;
 #ifdef PLANK_TRANSPORT
     bool beginFileClipboardPasteOnMainThread();
@@ -671,14 +676,14 @@ private:
     std::atomic<std::uintptr_t> m_ClipboardEventGeneration {0};
 #ifdef PLANK_TRANSPORT
 #ifdef Q_OS_WIN
-    std::unique_ptr<WindowsFileClipboard> m_FileClipboard;
+    using FileClipboard = WindowsFileClipboard;
 #else
-    std::unique_ptr<MacFileClipboard> m_FileClipboard;
+    using FileClipboard = MacFileClipboard;
 #endif
+    std::shared_ptr<FileClipboard> m_FileClipboard;
+    std::shared_ptr<FileClipboard> fileClipboard() const { return std::atomic_load(&m_FileClipboard); }
 #endif
-#ifdef PLANK_QT_SESSION
     std::atomic_bool m_QtClipboardFocused{false};
-#endif
 #endif
     std::atomic<Uint64> m_LastDiagnosticStats{0};
     std::atomic<float> m_CurrentRenderedFps;
