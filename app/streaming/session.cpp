@@ -4088,8 +4088,10 @@ bool Session::startConnectionAsync(bool reconnecting,
             }
             else if (activeSessionConflict) {
                 if (reconnecting) {
-                    // Busy can be our previous transport retiring, not takeover.
-                    // Only explicit transfer/cancellation ends recovery.
+                    // The Host may still be retiring our previous transport.
+                    // A busy response does not prove another client took over.
+                    // Use the normal bounded/continuous recovery policy; only
+                    // an explicit takeover termination ends recovery as such.
                     throw;
                 }
                 if (takeOverActiveSession ||
@@ -4945,7 +4947,7 @@ bool Session::runPlankReconnect()
                 return true;
             }
         } catch (const MacSessionActiveException&) {
-            qInfo() << "Previous Mac session is still retiring; retrying recovery";
+            qInfo() << "PLANK previous Mac session is still retiring; retrying recovery";
         } catch (const GfeHttpResponseException& error) {
             qWarning() << "PLANK reconnect attempt" << attempt
                        << "failed:" << error.toQString();
