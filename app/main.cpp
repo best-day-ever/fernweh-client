@@ -53,6 +53,11 @@
 #endif
 
 #if defined(Q_OS_WIN32)
+#include "antihookingprotection.h"
+#define SDL_MAIN_HANDLED
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <dxgi1_6.h>
@@ -349,6 +354,10 @@ void configureSignalHandlers()
 
 int main(int argc, char *argv[])
 {
+#ifdef Q_OS_WIN32
+    SDL_SetMainReady();
+    SDL_SetAppMetadata(PlankClientIdentity::displayName, PLANK_VERSION_STR, PlankClientIdentity::desktopId);
+#endif
 #ifdef Q_OS_MACOS
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Metal);
 #else

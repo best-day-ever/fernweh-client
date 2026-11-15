@@ -1107,58 +1107,6 @@ bool D3D11VARenderer::checkDecoderSupport(IDXGIAdapter* adapter)
         }
         break;
 
-    case VIDEO_FORMAT_AV1_MAIN8:
-        if (FAILED(videoDevice->CheckVideoDecoderFormat(&D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, DXGI_FORMAT_NV12, &supported))) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "GPU doesn't support AV1 decoding");
-            return false;
-        }
-        else if (!supported) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "GPU doesn't support AV1 decoding to NV12 format");
-            return false;
-        }
-        break;
-
-    case VIDEO_FORMAT_AV1_MAIN10:
-        if (FAILED(videoDevice->CheckVideoDecoderFormat(&D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, DXGI_FORMAT_P010, &supported))) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "GPU doesn't support AV1 Main 10-bit decoding");
-            return false;
-        }
-        else if (!supported) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "GPU doesn't support AV1 Main 10-bit decoding to P010 format");
-            return false;
-        }
-        break;
-
-    case VIDEO_FORMAT_AV1_HIGH8_444:
-        if (FAILED(videoDevice->CheckVideoDecoderFormat(&D3D11_DECODER_PROFILE_AV1_VLD_PROFILE1, DXGI_FORMAT_AYUV, &supported))) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "GPU doesn't support AV1 High 444 8-bit decoding");
-            return false;
-        }
-        else if (!supported) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "GPU doesn't support AV1 High 444 8-bit decoding to AYUV format");
-            return false;
-        }
-        break;
-
-    case VIDEO_FORMAT_AV1_HIGH10_444:
-        if (FAILED(videoDevice->CheckVideoDecoderFormat(&D3D11_DECODER_PROFILE_AV1_VLD_PROFILE1, DXGI_FORMAT_Y410, &supported))) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "GPU doesn't support AV1 High 444 10-bit decoding");
-            return false;
-        }
-        else if (!supported) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "GPU doesn't support AV1 High 444 10-bit decoding to Y410 format");
-            return false;
-        }
-        break;
-
     default:
         SDL_assert(false);
         return false;
@@ -1195,8 +1143,7 @@ int D3D11VARenderer::getRendererAttributes()
 
 int D3D11VARenderer::getDecoderCapabilities()
 {
-    return CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC |
-           CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
+    return CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC;
 }
 
 bool D3D11VARenderer::needsTestFrame()
