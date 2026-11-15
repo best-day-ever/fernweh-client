@@ -271,7 +271,7 @@ void TestPacerShutdown::stopDuringRender()
     QVERIFY(pacer->initialize(nullptr, 60, false));
     pacer->submitFrame(frameWithReleaseCounter(releases));
     acquire(renderer.renderEntered);
-    QCOMPARE(PlankVideoPipeline::read(PlankVideoPipeline::renderOperation, SDL_GetTicks()).stage,
+    QCOMPARE(PlankVideoPipeline::read(PlankVideoPipeline::renderOperation, PlankClock::milliseconds()).stage,
              PlankVideoPipeline::Stage::RenderFrame);
     QCOMPARE(PlankVideoPipeline::rendererReturns.load(), uint64_t(0));
     pacer->submitFrame(frameWithReleaseCounter(releases));

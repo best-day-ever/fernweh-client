@@ -1874,7 +1874,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
             // Waiting for input. All output frames have been received.
             // Block until we receive a new frame from the host.
             PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                                      PlankVideoPipeline::Stage::WaitingInput, SDL_GetTicks());
+                                      PlankVideoPipeline::Stage::WaitingInput);
             if (!LiWaitForNextVideoFrame(&handle, &du)) {
                 // This might be a signal from the main thread to exit
                 continue;
@@ -1900,10 +1900,10 @@ void FFmpegVideoDecoder::decoderThreadProc()
             int err;
             do {
                 PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                                          PlankVideoPipeline::Stage::ReceiveOutput, SDL_GetTicks());
+                                          PlankVideoPipeline::Stage::ReceiveOutput);
                 err = avcodec_receive_frame(m_VideoDecoderCtx, frame);
                 PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                                          PlankVideoPipeline::Stage::BetweenCalls, SDL_GetTicks());
+                                          PlankVideoPipeline::Stage::BetweenCalls);
                 if (err == 0) {
                     if ((m_CaptureSource == DecoderCaptureSource::ScreenCaptureKit &&
                             !plankAppleVideoFrameMatches(frame, m_VideoDecoderCtx->profile, m_VideoFormat == VIDEO_FORMAT_H265_REXT10_444)) ||
@@ -1969,7 +1969,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
 
                     // Queue the frame for rendering (or render now if pacer is disabled)
                     PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                                              PlankVideoPipeline::Stage::SubmitPacer, SDL_GetTicks());
+                                              PlankVideoPipeline::Stage::SubmitPacer);
                     if (m_FrontendRenderer->ownsPresentationScheduling()) {
                         m_FrontendRenderer->renderFrame(frame);
                         av_frame_free(&frame);
@@ -1977,7 +1977,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
                         m_Pacer->submitFrame(frame);
                     }
                     PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                                              PlankVideoPipeline::Stage::BetweenCalls, SDL_GetTicks());
+                                              PlankVideoPipeline::Stage::BetweenCalls);
                 }
                 else if (err == AVERROR(EAGAIN)) {
                     VIDEO_FRAME_HANDLE handle;
@@ -2032,7 +2032,7 @@ void FFmpegVideoDecoder::decoderThreadProc()
 int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 {
     PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                              PlankVideoPipeline::Stage::PreparePacket, SDL_GetTicks());
+                              PlankVideoPipeline::Stage::PreparePacket);
     PLENTRY entry = du->bufferList;
     int err;
 
@@ -2057,10 +2057,10 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
     // Flip stats windows roughly every second
     if (SDL_GetTicks() >= m_ActiveWndVideoStats.measurementStartTimestamp + 1000) {
         PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                                  PlankVideoPipeline::Stage::CollectStatistics, SDL_GetTicks());
+                                  PlankVideoPipeline::Stage::CollectStatistics);
         m_FrontendRenderer->collectPresentationStats(m_ActiveWndVideoStats);
         PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                                  PlankVideoPipeline::Stage::PreparePacket, SDL_GetTicks());
+                                  PlankVideoPipeline::Stage::PreparePacket);
         VIDEO_STATS lastTwoWndStats = {};
         addVideoStats(m_LastWndVideoStats, lastTwoWndStats);
         addVideoStats(m_ActiveWndVideoStats, lastTwoWndStats);
@@ -2139,10 +2139,10 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
         (du->enqueueTimeUs - du->receiveTimeUs) / 1000);
 
     PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                              PlankVideoPipeline::Stage::SubmitPacket, SDL_GetTicks());
+                              PlankVideoPipeline::Stage::SubmitPacket);
     err = avcodec_send_packet(m_VideoDecoderCtx, m_Pkt);
     PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
-                              PlankVideoPipeline::Stage::BetweenCalls, SDL_GetTicks());
+                              PlankVideoPipeline::Stage::BetweenCalls);
     if (err < 0) {
         char errorstring[512];
         av_strerror(err, errorstring, sizeof(errorstring));
