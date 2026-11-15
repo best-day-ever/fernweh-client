@@ -1,4 +1,4 @@
-## This build — upstream integration candidate
+## 1.2.37 — Upstream integration
 
 ### Client
 - Keep selected monitors, primary display, crops and shared-session views through layout changes, Apply/Keep and reconnects.
