@@ -632,6 +632,9 @@ private:
         // when the workstation shows it, else -1.
         int planIndex = -1;
         bool primary = false;
+        // Legacy bookmark selection. Keep unselected probe views available
+        // to the display-profile planner without enlarging its scaled stream.
+        bool legacySelected = true;
     };
     QVector<ClientDisplaySnapshot> m_ClientDisplays;
     GuiDisplaySnapshot m_GuiDisplaySnapshot;

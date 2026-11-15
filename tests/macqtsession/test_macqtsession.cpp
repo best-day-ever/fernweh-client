@@ -132,6 +132,21 @@ private slots:
         auto* prompt = scene.rootObject()->findChild<QQuickItem*>("screensPrompt");
         QVERIFY(prompt); QVERIFY(!prompt->isVisible());
     }
+    void fullscreenDisplayMenuTracksPresentationSelection()
+    {
+        QWindow host; host.resize(1440,900);
+        Control control(&host); QtSessionWindow scene(&host,&control);
+        scene.resize(host.size());
+        host.setWindowState(Qt::WindowFullScreen);
+        auto* single=scene.rootObject()->findChild<QObject*>("fullscreenThisMonitor");
+        auto* all=scene.rootObject()->findChild<QObject*>("fullscreenBothMonitors");
+        QVERIFY(single); QVERIFY(all);
+        for (const bool span : {true,false,true}) {
+            scene.setDisplayMode(true,span);
+            QTRY_COMPARE(all->property("checked").toBool(),span);
+            QCOMPARE(single->property("checked").toBool(),!span);
+        }
+    }
     void redirectedSceneKeepsControlsAndRemoteInputSeparate()
     {
         QWindow host;

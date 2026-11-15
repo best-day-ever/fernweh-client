@@ -6,6 +6,26 @@
 class PlankDisplayMode
 {
 public:
+    // Discovery includes every monitor for profile planning. Legacy bookmarks
+    // and planned subsets must size their stream from the selected outputs.
+    // The snapshot type remains owned by Session (including its platform ID).
+    template<class Displays, class DisplayId>
+    static QSize detectedClientResolution(const Displays& displays, DisplayId target,
+                                         bool multi, bool planned)
+    {
+        QSize canvas(0, 0);
+        for (const auto& display : displays) {
+            if (planned ? display.planIndex < 0 : !display.legacySelected) continue;
+            if (!multi) {
+                if (display.displayId == target) return display.matchTarget;
+                continue;
+            }
+            canvas.rwidth() += display.matchTarget.width();
+            canvas.setHeight(qMax(canvas.height(), display.matchTarget.height()));
+        }
+        return canvas.isEmpty() ? QSize() : canvas;
+    }
+
     // The ceiling of the legacy scaled-span path only (a 4K stream fitted to
     // the client); display arrangements use resolveClient instead.
     static QSize qualifiedMaximum();
