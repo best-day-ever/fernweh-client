@@ -12,6 +12,12 @@ class IFFmpegRendererFactory;
 #define MAX_SLICES 4
 #define SDL_CODE_FRAME_READY 0
 
+enum class DecoderSelectionMode
+{
+    PreferExactHardwareThenSoftware,
+    ExactHardwareOnly,
+};
+
 enum class DecoderCaptureSource
 {
     Nvfbc8Bit,
@@ -57,6 +63,7 @@ typedef struct _VIDEO_STATS {
 typedef struct _DECODER_PARAMETERS {
     SDL_Window* window = nullptr;
     const PlankPresentationLayout* presentationLayout = nullptr;
+    DecoderSelectionMode selectionMode = DecoderSelectionMode::PreferExactHardwareThenSoftware;
     DecoderCaptureSource captureSource;
     DecoderEncoderBackend encoderBackend;
 
@@ -65,11 +72,12 @@ typedef struct _DECODER_PARAMETERS {
     int height;
     int frameRate;
     bool enableVsync;
+    bool enableFramePacing = false;
     bool enableIdentityGbr;
     bool testOnly;
     // Required UI-owned presenter.
     // The factory outlives decoder startup, reconnect and destruction.
-    IFFmpegRendererFactory* rendererFactory;
+    IFFmpegRendererFactory* rendererFactory = nullptr;
 } DECODER_PARAMETERS, *PDECODER_PARAMETERS;
 
 #define WINDOW_STATE_CHANGE_SIZE 0x01
@@ -96,6 +104,9 @@ public:
 
     virtual bool initialize(PDECODER_PARAMETERS params) = 0;
     virtual bool isHardwareAccelerated() = 0;
+    virtual bool isAlwaysFullScreen() { return false; }
+    virtual bool isHdrSupported() { return false; }
+    virtual QSize getDecoderMaxResolution() { return {}; }
     virtual int getDecoderCapabilities() = 0;
     virtual int getDecoderColorspace() = 0;
     virtual int getDecoderColorRange() = 0;

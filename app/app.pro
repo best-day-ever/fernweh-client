@@ -460,11 +460,17 @@ ffmpeg {
 
     DEFINES += HAVE_FFMPEG
     SOURCES += \
-        streaming/video/ffmpeg.cpp \
         streaming/video/ffmpeg-renderers/genhwaccel.cpp \
         streaming/video/ffmpeg-renderers/sdlvid.cpp \
         streaming/video/ffmpeg-renderers/swframemapper.cpp \
         streaming/video/ffmpeg-renderers/pacer/pacer.cpp
+
+    contains(CONFIG, plank-qt-session) {
+        SOURCES += streaming/video/ffmpeg.cpp
+    } else {
+        SOURCES += streaming/video/ffmpegsdl.cpp
+        HEADERS += streaming/video/ffmpegsdl.h
+    }
 
     HEADERS += \
         streaming/video/ffmpeg.h \
@@ -752,13 +758,6 @@ else:unix: LIBS += -L$$OUT_PWD/../qmdnsengine/ -lqmdnsengine
 
 INCLUDEPATH += $$PWD/../qmdnsengine/qmdnsengine/src/include $$PWD/../qmdnsengine
 DEPENDPATH += $$PWD/../qmdnsengine/qmdnsengine/src/include $$PWD/../qmdnsengine
-
-win32:CONFIG(release, debug|release): LIBS += -L$$OUT_PWD/../h264bitstream/release/ -lh264bitstream
-else:win32:CONFIG(debug, debug|release): LIBS += -L$$OUT_PWD/../h264bitstream/debug/ -lh264bitstream
-
-
-INCLUDEPATH += $$PWD/../h264bitstream
-DEPENDPATH += $$PWD/../h264bitstream
 
 !winrt {
     win32:CONFIG(release, debug|release): LIBS += -L$$OUT_PWD/../AntiHooking/release/ -lAntiHooking

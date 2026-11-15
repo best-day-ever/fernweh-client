@@ -1,5 +1,9 @@
 #pragma once
 
+#ifndef PLANK_QT_SESSION
+#include "ffmpegsdl.h"
+#else
+
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -102,3 +106,5 @@ private:
     QQueue<DECODE_UNIT> m_FrameInfoQueue;
 
 };
+
+#endif // PLANK_QT_SESSION
