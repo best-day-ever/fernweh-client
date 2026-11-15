@@ -82,6 +82,56 @@ private slots:
         current.setTimestamp(101); QCoreApplication::sendEvent(&scene,&current);
         QCOMPARE(motion.size(),1);
     }
+    void screensPromptActionsStayLocalAndRespectVisibility()
+    {
+        QWindow host; host.resize(1440, 900);
+        Control control(&host); QtSessionWindow scene(&host, &control);
+        scene.resize(host.size()); scene.setPinned(true); scene.setLiveSession(true);
+        scene.setRemoteInputEnabled(true);
+        scene.setPresentation({QSize(1440,900), QRectF(0,0,1440,900),
+            QRectF(0,0,1440,900), QSize(1440,900), host.size()});
+        scene.setScreensPrompt(QStringLiteral("Two displays changed"));
+        QImage image(host.size(), QImage::Format_ARGB32_Premultiplied);
+        scene.setRenderTarget(QQuickRenderTarget::fromPaintDevice(&image));
+        control.polishItems(); control.sync(); control.render();
+        const auto captures = qEnvironmentVariable("PLANK_QT_SESSION_CAPTURE_DIR");
+        if (!captures.isEmpty()) {
+            QVERIFY(QDir().mkpath(captures));
+            QVERIFY(image.save(captures + QStringLiteral("/macos-qt-screens-prompt.png")));
+        }
+        QSignalSpy remote(&scene, &QtSessionWindow::remoteButton);
+        QSignalSpy apply(&scene, &QtSessionWindow::screensApplyRequested);
+        QSignalSpy keep(&scene, &QtSessionWindow::screensKeepRequested);
+        QSignalSpy setup(&scene, &QtSessionWindow::screensSetupRequested);
+        for (const auto* name : {"screensApplyButton", "screensKeepButton", "screensSetupButton"}) {
+            auto* button = scene.rootObject()->findChild<QQuickItem*>(name);
+            QVERIFY(button);
+            const auto point = button->mapToScene(button->boundingRect().center());
+            pointer(scene, QEvent::MouseButtonPress, point, Qt::LeftButton);
+            pointer(scene, QEvent::MouseButtonRelease, point, Qt::LeftButton);
+        }
+        QCOMPARE(apply.size(), 1); QCOMPARE(keep.size(), 1); QCOMPARE(setup.size(), 1);
+        QVERIFY(remote.isEmpty());
+        scene.setScreensPrompt({});
+        auto* prompt = scene.rootObject()->findChild<QQuickItem*>("screensPrompt");
+        QVERIFY(prompt); QVERIFY(!prompt->isVisible());
+    }
+    void screenPromptUsesNormalIdleHideEvenWhileHovered()
+    {
+        QWindow host; host.resize(1440, 900);
+        Control control(&host); QtSessionWindow scene(&host, &control);
+        scene.resize(host.size()); scene.setLiveSession(true);
+        scene.setScreensPrompt(QStringLiteral("Displays changed"));
+        QVERIFY(scene.toolbarVisible());
+        auto* toolbar = scene.rootObject()->findChild<QQuickItem*>("sessionToolbar");
+        QVERIFY(toolbar);
+        const auto point = toolbar->mapToScene(toolbar->boundingRect().center());
+        pointer(scene, QEvent::MouseMove, point, Qt::NoButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!scene.toolbarVisible(), 6500);
+        QCOMPARE(scene.screensPrompt(), QStringLiteral("Displays changed"));
+        auto* prompt = scene.rootObject()->findChild<QQuickItem*>("screensPrompt");
+        QVERIFY(prompt); QVERIFY(!prompt->isVisible());
+    }
     void redirectedSceneKeepsControlsAndRemoteInputSeparate()
     {
         QWindow host;

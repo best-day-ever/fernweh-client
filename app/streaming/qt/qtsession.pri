@@ -9,5 +9,5 @@ macx {
     HEADERS += $$PWD/metalsessionshell.h $$PWD/macpointerinput.h
     LIBS += -framework Metal -framework QuartzCore -framework IOKit
 }
-HEADERS += $$PWD/sessionwindow.h $$PWD/sessiongeometry.h $$PWD/sessionshell.h $$PWD/cursoritem.h $$PWD/sessionshortcut.h
+HEADERS += $$PWD/sessionwindow.h $$PWD/sessiongeometry.h $$PWD/sessionlayout.h $$PWD/sessionshell.h $$PWD/cursoritem.h $$PWD/sessionshortcut.h
 RESOURCES += $$PWD/qtsession.qrc

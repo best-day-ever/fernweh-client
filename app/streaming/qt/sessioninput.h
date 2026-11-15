@@ -54,6 +54,7 @@ public:
     void cancelPointerCapture();
 
     void setStreamSize(QSize size);
+    void setVideoSize(QSize size) { m_VideoSize.store((std::uint64_t(size.width()) << 32) | std::uint32_t(size.height())); }
     void setEnabled(bool enabled);
     void setFocused(bool focused);
     void setSystemKeys(bool captured);
@@ -109,6 +110,7 @@ private:
     PlankRemoteCursor m_Cursor;
     PlankCallbackTarget<QtRawWacomInput> m_RawControl;
     std::atomic<std::uint64_t> m_StreamSize{0};
+    std::atomic<std::uint64_t> m_VideoSize{0};
     std::atomic_bool m_ActivityPending{false};
     // GUI-thread state: last successfully queued mouse position, in wire pixels.
     // A zero size invalidates it after focus, transport or tablet ownership changes.

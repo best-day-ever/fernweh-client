@@ -19,6 +19,13 @@ struct QtSessionGeometry
     QRectF destinationPixels;
     QSize drawableSize;
     QSize logicalSize;
+    // Capture packing and output-only sharing can use a different coordinate
+    // space from the desktop that receives absolute pointer/pen input.
+    QSize desktopSize;
+    QRectF desktopPixels;
+
+    QRectF inputPixels() const { return desktopPixels.isValid() ? desktopPixels : sourcePixels; }
+    QSize inputSize() const { return desktopSize.isValid() ? desktopSize : streamSize; }
 
     bool valid() const
     {
@@ -33,7 +40,9 @@ struct QtSessionGeometry
                sourcePixels.width() >= 1 && sourcePixels.height() >= 1 &&
                destinationPixels.width() > 0 && destinationPixels.height() > 0 &&
                QRectF(QPointF(), streamSize).contains(sourcePixels) &&
-               QRectF(QPointF(), drawableSize).contains(destinationPixels);
+               QRectF(QPointF(), drawableSize).contains(destinationPixels) &&
+               (!desktopPixels.isValid() || (finiteRect(desktopPixels) && desktopSize.isValid() &&
+                    QRectF(QPointF(), desktopSize).contains(desktopPixels)));
     }
 
     bool toStream(const QPointF& logical, QPointF& stream, bool clamp = false) const
@@ -48,26 +57,36 @@ struct QtSessionGeometry
                        pixel.y() < d.y() || pixel.y() >= d.y() + d.height())) {
             return false;
         }
+        const auto input = inputPixels();
         stream = QPointF(
-            sourcePixels.x() + std::clamp((pixel.x() - d.x()) / d.width() *
-                                         sourcePixels.width(), 0.0, sourcePixels.width() - 1.0),
-            sourcePixels.y() + std::clamp((pixel.y() - d.y()) / d.height() *
-                                         sourcePixels.height(), 0.0, sourcePixels.height() - 1.0));
+            input.x() + std::clamp((pixel.x() - d.x()) / d.width() *
+                                         input.width(), 0.0, input.width() - 1.0),
+            input.y() + std::clamp((pixel.y() - d.y()) / d.height() *
+                                         input.height(), 0.0, input.height() - 1.0));
         return true;
+    }
+
+    bool fromCapture(const QPointF& stream, QPointF& logical) const
+    {
+        auto capture = *this;
+        capture.desktopPixels = {};
+        capture.desktopSize = {};
+        return capture.fromStream(stream, logical);
     }
 
     bool fromStream(const QPointF& stream, QPointF& logical) const
     {
+        const auto input = inputPixels();
         if (!valid() || !std::isfinite(stream.x()) || !std::isfinite(stream.y()) ||
-                stream.x() < sourcePixels.x() || stream.x() >= sourcePixels.x() + sourcePixels.width() ||
-                stream.y() < sourcePixels.y() || stream.y() >= sourcePixels.y() + sourcePixels.height()) {
+                stream.x() < input.x() || stream.x() >= input.x() + input.width() ||
+                stream.y() < input.y() || stream.y() >= input.y() + input.height()) {
             return false;
         }
         logical = QPointF(
-            (destinationPixels.x() + (stream.x() - sourcePixels.x()) *
-             destinationPixels.width() / sourcePixels.width()) * logicalSize.width() / drawableSize.width(),
-            (destinationPixels.y() + (stream.y() - sourcePixels.y()) *
-             destinationPixels.height() / sourcePixels.height()) * logicalSize.height() / drawableSize.height());
+            (destinationPixels.x() + (stream.x() - input.x()) *
+             destinationPixels.width() / input.width()) * logicalSize.width() / drawableSize.width(),
+            (destinationPixels.y() + (stream.y() - input.y()) *
+             destinationPixels.height() / input.height()) * logicalSize.height() / drawableSize.height());
         return true;
     }
 };

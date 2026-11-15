@@ -3246,11 +3246,14 @@ bool Session::planDisplayArrangement(const QVector<NvClientDisplay>& displays, i
     // Never an 8K stream this Mac would decode in software.
     limits.decoderMaximum = DecoderCaps::maximum(host.encodingMode);
 #endif
+#ifdef PLANK_QT_SESSION
+    limits.separateWindows = true;
+#else
     const char* driver = SDL_GetCurrentVideoDriver();
-    // Cocoa can prepare hidden per-display windows even when starting
-    // windowed. The green button or toolbar can enter fullscreen later.
+    // Cocoa can prepare hidden per-display windows even when starting windowed.
     limits.separateWindows = driver != nullptr &&
             (strcmp(driver, "cocoa") == 0 || (m_IsFullScreen && strcmp(driver, "wayland") == 0));
+#endif
     DisplayProfile::Resolved resolved = displayProfileFor(displays);
     if (resolved.source == DisplayProfile::Resolved::Legacy) {
         // Keep the saved Match client request on the qualified older modes,
@@ -3318,9 +3321,13 @@ void Session::applyArrangementPresentation()
 {
     // Which client display shows which planned workstation display. The plan
     // was made from these very snapshots (probeView), so bounds identify them.
+#ifdef PLANK_QT_SESSION
+    const bool separateWindows = true;
+#else
     const char* driver = SDL_GetCurrentVideoDriver();
     const bool separateWindows = driver != nullptr &&
             (strcmp(driver, "cocoa") == 0 || (m_IsFullScreen && strcmp(driver, "wayland") == 0));
+#endif
     QVector<NvClientDisplay> displays;
     for (const auto& display : std::as_const(m_ClientDisplays)) displays.append(display.probeView);
     const auto targets = DisplayPlanner::presentationTargets(m_DisplayPlan, displays, separateWindows);
@@ -3519,7 +3526,9 @@ bool Session::configurePlankLaunchGeometry(bool resolveProfile)
         qInfo() << "PLANK launch geometry changed from"
                 << previousResolution << "to" << resolution;
     }
-    return true;
+    // The GUI must select and expose the actual profile outputs before the
+    // exact-format decoder probe starts. No GUI object crosses to this worker.
+    return !m_QtPreparePresentation || m_QtPreparePresentation();
 }
 
 void Session::getWindowDimensions(int& x, int& y,

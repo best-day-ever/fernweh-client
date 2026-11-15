@@ -145,6 +145,27 @@ private slots:
         tabletActivityHandler = {};
         qunsetenv("PLANK_EXTERNAL_WACOM_BRIDGE");
     }
+    void cursorOffersUseCaptureSizeWhileInputUsesTheDesktop()
+    {
+        Fixture f;
+        f.input.setStreamSize({8560,2880});
+        f.input.setVideoSize({5120,4320});
+        QSignalSpy positions(&f.input,&QtSessionInput::cursorPosition);
+        PLANK_CURSOR_POSITION_WIRE_MESSAGE packet{};
+        packet.magic=qToLittleEndian(quint32(PLANK_CURSOR_POSITION_WIRE_MAGIC));
+        packet.version=qToLittleEndian(quint16(PLANK_CURSOR_POSITION_WIRE_VERSION));
+        packet.sequence=qToLittleEndian(quint64(1));
+        packet.x=qToLittleEndian(quint32(2560)); packet.y=qToLittleEndian(quint32(2880));
+        packet.frameWidth=qToLittleEndian(quint32(5120)); packet.frameHeight=qToLittleEndian(quint32(4320));
+        f.input.handleCursorPosition(reinterpret_cast<const unsigned char*>(&packet),sizeof(packet));
+        QCoreApplication::processEvents();
+        QCOMPARE(positions.size(),1);
+        QCOMPARE(positions.first().first().toPointF(),QPointF(2560,2880));
+        packet.sequence=qToLittleEndian(quint64(2));
+        packet.frameWidth=qToLittleEndian(quint32(8560)); packet.frameHeight=qToLittleEndian(quint32(2880));
+        f.input.handleCursorPosition(reinterpret_cast<const unsigned char*>(&packet),sizeof(packet));
+        QCoreApplication::processEvents(); QCOMPARE(positions.size(),1);
+    }
     void pasteWaitsForClipboardPublicationAndConsumesItsKeyRelease()
     {
         Fixture f;
@@ -324,6 +345,7 @@ private slots:
     void immersiveRawTabletHandoffOrdersCancelBeforeReportAndExcludesNewBegin()
     {
         Fixture f; f.start(LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND);
+        QTRY_VERIFY(saw("raw-active"));
         QVERIFY(tabletBeforePointer); QVERIFY(tabletAfterPointer);
         f.capture();
         std::atomic<bool> done{false};
@@ -343,6 +365,7 @@ private slots:
     void immersiveBeginDoesNotSplitRawTabletReportEnqueue()
     {
         Fixture f; f.start(LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND);
+        QTRY_VERIFY(saw("raw-active"));
         std::atomic<bool> locked{false}, release{false}; bool accepted = false;
         std::thread reader([&] {
             accepted = tabletBeforePointer(); locked.store(true);

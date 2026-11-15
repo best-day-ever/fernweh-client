@@ -163,7 +163,8 @@ void QtSessionInput::handleCursorShape(const unsigned char* data, unsigned int l
 }
 void QtSessionInput::handleCursorPosition(const unsigned char* data, unsigned int length)
 {
-    const auto size = m_StreamSize.load();
+    const auto video = m_VideoSize.load();
+    const auto size = video ? video : m_StreamSize.load();
     if (m_Cursor.position(data, length, QSize(int(size >> 32), int(size & 0xffffffffu))))
         QMetaObject::invokeMethod(this, &QtSessionInput::consumePosition, Qt::QueuedConnection);
 }
