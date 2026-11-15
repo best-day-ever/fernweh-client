@@ -259,6 +259,8 @@ linux:packagesExist(libinput):packagesExist(libudev) {
 }
 
 win32 {
+    SOURCES += streaming/audio/sdlmicrophone.cpp
+    HEADERS += streaming/audio/sdlmicrophone.h
     LIBS += -llibssl -llibcrypto -lSDL3 -lSDL3_ttf -lavcodec -lavutil -lswscale -lopus -ldxgi -ld3d11 -llibplacebo
     CONFIG += ffmpeg libplacebo
 }

@@ -10,6 +10,9 @@
 #include "macmicrophonepermission.h"
 #include "macmicrophone.h"
 #endif
+#ifdef Q_OS_WIN
+#include "sdlmicrophone.h"
+#endif
 #ifdef PLANK_TRANSPORT
 #include <plank_transport.h>
 #include <plank_transport_control.h>
@@ -50,8 +53,19 @@ void PlankMicrophone::run()
     using Clock = std::chrono::steady_clock;
 #ifdef Q_OS_LINUX
     using Capture = PlankLinuxMicrophone;
-#else
+#elif defined(Q_OS_MACOS)
     using Capture = PlankMacMicrophone;
+#elif defined(Q_OS_WIN)
+    using Capture = PlankSdlMicrophone;
+    // Windows offers only the existing untimed PMIC v2 contract. Never
+    // invent a native capture timestamp for an unsupported timed request.
+    if (m_Timed) {
+        m_State.store(State::Unavailable);
+        plank_transport_native_microphone_activate(m_Endpoint, 0);
+        return;
+    }
+#else
+#error Unsupported microphone capture platform
 #endif
     std::unique_ptr<Capture> capture;
     std::uint64_t nextSample = 0;
