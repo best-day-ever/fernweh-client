@@ -1,5 +1,6 @@
 QT += core testlib
 CONFIG += console testcase c++17 link_pkgconfig
+PKGCONFIG += sdl3
 CONFIG -= app_bundle
 TEMPLATE = app
 LIBS += -framework AppKit -framework ApplicationServices -framework Carbon

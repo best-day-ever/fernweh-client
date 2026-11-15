@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #include <QtTest>
+#include <SDL3/SDL_init.h>
 #include <QTimer>
 #include "../../app/streaming/macquitshortcut.h"
 #include "../../app/streaming/planksessionevents.h"
