@@ -4,6 +4,9 @@
 #include <QGuiApplication>
 #include <QFile>
 #include <QRegularExpression>
+#include <QQuickItem>
+#include <QQuickStyle>
+#include <QQuickWindow>
 #include "streamingpreferences.h"
 
 class FakeManager : public QObject {
@@ -28,6 +31,10 @@ public:
 class HostChoicesTest : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase() {
+        QQuickStyle::setStyle("Material");
+    }
+
     void bookmarkLayoutLabels_data() {
         QTest::addColumn<QString>("filename");
         QTest::addColumn<QString>("choiceId");
@@ -135,6 +142,7 @@ private slots:
         qmlRegisterSingletonInstance("ComputerManager", 1, 0, "ComputerManager", &manager);
         qmlRegisterUncreatableType<FakePreferences>("StreamingPreferences", 1, 0, "StreamingPreferences", "enums only");
         QQmlEngine engine;
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
         QQmlComponent component(&engine, QUrl::fromLocalFile(QString::fromUtf8(qgetenv("PLANK_CLIENT_SOURCE")) + "/app/gui/PlankCaptureSourceBox.qml"));
         QScopedPointer<QObject> box(component.create());
         QVERIFY2(box, qPrintable(component.errorString()));
@@ -169,6 +177,42 @@ private slots:
         emit manager.hostPlatformDetected(3, "offline.test", 2, 0);
         QCOMPARE(box->property("count").toInt(), 3);
         QCOMPARE(box->property("hostDisplayPolicy").toInt(), -1);
+        QCOMPARE(warnings.size(), 0);
+    }
+
+    void keyboardSelectionKeepsSavedLayoutValues() {
+        const QString guiPath = QString::fromUtf8(qgetenv("PLANK_CLIENT_SOURCE")) + "/app/gui/";
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        component.setData("import QtQuick\nimport \".\"\n"
+                          "PlankHostLayoutBox { width: 320; hostDisplayPolicy: 0 }",
+                          QUrl::fromLocalFile(guiPath + "KeyboardLayoutTest.qml"));
+        QQuickWindow window;
+        QScopedPointer<QObject> box(component.create());
+        QVERIFY2(box, qPrintable(component.errorString()));
+        auto* item = qobject_cast<QQuickItem*>(box.data());
+        QVERIFY(item);
+        item->setParentItem(window.contentItem());
+        window.resize(400,100);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        item->forceActiveFocus();
+        QVERIFY(item->hasActiveFocus());
+        QCOMPARE(box->property("currentIndex").toInt(), 0);
+        QTest::keyClick(&window, Qt::Key_Down);
+        QCOMPARE(box->property("currentIndex").toInt(), 1);
+        QCOMPARE(box->property("layoutChoice").toInt(), 2);
+        QVERIFY(!box->property("currentText").toString().isEmpty());
+        QTest::keyClick(&window, Qt::Key_Down);
+        QCOMPARE(box->property("layoutChoice").toInt(), 3);
+        box->setProperty("hostDisplayPolicy", 1);
+        QCOMPARE(box->property("currentIndex").toInt(), 3);
+        QCOMPARE(box->property("layoutChoice").toInt(), 3);
+        box->setProperty("hostDisplayPolicy", 0);
+        QCOMPARE(box->property("currentIndex").toInt(), 2);
+        QCOMPARE(box->property("layoutChoice").toInt(), 3);
+        QTest::keyClick(&window, Qt::Key_Up);
+        QCOMPARE(box->property("layoutChoice").toInt(), 2);
     }
 };
 QTEST_MAIN(HostChoicesTest)
