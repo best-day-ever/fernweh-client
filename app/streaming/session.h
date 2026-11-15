@@ -372,11 +372,11 @@ private:
 #endif
 #endif
 
-    bool validateLaunch();
+    bool validateLaunch(SDL_Window* testWindow = nullptr);
 
     void emitLaunchWarning(QString text);
 
-    bool populateDecoderProperties();
+    bool populateDecoderProperties(SDL_Window* testWindow = nullptr);
 
     IAudioRenderer* createAudioRenderer(const POPUS_MULTISTREAM_CONFIGURATION opusConfig);
 
@@ -454,7 +454,8 @@ private:
     };
 
     DecoderAvailability getDecoderAvailability(int videoFormat, int width, int height, int frameRate,
-                                               bool enableIdentityGbr = false);
+                                               bool enableIdentityGbr = false,
+                                               SDL_Window* testWindow = nullptr);
 
     static
     bool chooseDecoder(int videoFormat, int width, int height,
@@ -465,7 +466,11 @@ private:
                            DecoderCaptureSource::Nvfbc8Bit,
                        DecoderEncoderBackend encoderBackend =
                            DecoderEncoderBackend::SoftwareCuda,
-                       IFFmpegRendererFactory* presenter = nullptr);
+                       IFFmpegRendererFactory* presenter = nullptr,
+                       SDL_Window* window = nullptr,
+                       bool enableFramePacing = false,
+                       DecoderSelectionMode selectionMode =
+                           DecoderSelectionMode::PreferExactHardwareThenSoftware);
 
     bool isIdentityGbrEnabledForFormat(int videoFormat) const;
     DecoderCaptureSource decoderCaptureSource() const;

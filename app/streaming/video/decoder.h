@@ -75,7 +75,7 @@ typedef struct _DECODER_PARAMETERS {
     bool enableFramePacing = false;
     bool enableIdentityGbr;
     bool testOnly;
-    // Required UI-owned presenter.
+    // Required for Qt; null selects the established SDL renderer policy.
     // The factory outlives decoder startup, reconnect and destruction.
     IFFmpegRendererFactory* rendererFactory = nullptr;
 } DECODER_PARAMETERS, *PDECODER_PARAMETERS;

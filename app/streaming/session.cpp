@@ -1,4 +1,5 @@
 #include <QtGlobal>
+#include <QScopeGuard>
 #include <QDebug>
 #include <QThread>
 #include "monotonicclock.h"
@@ -127,8 +128,10 @@ using PlatformFileClipboard = MacFileClipboard;
 #include <tuple>
 #include <utility>
 #include <vector>
+#ifdef PLANK_QT_SESSION
 #include "qt/sessionruntime.h"
 #include "qt/sessioninput.h"
+#endif
 
 CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
     Session::clStageStarting,
@@ -177,7 +180,8 @@ void Session::clStageFailed(int stage, int errorCode)
 
 void Session::clConnectionTerminated(int errorCode)
 {
-    if (s_ActiveSession != nullptr && errorCode != 0) emit s_ActiveSession->diagnosticConnectionLost(errorCode);
+    if (!s_ActiveSession) return;
+    if (errorCode != 0) emit s_ActiveSession->diagnosticConnectionLost(errorCode);
     if (static_cast<std::uint32_t>(errorCode) ==
             PLANK_TRANSPORT_TERMINATION_SESSION_TAKEN_OVER) {
         s_ActiveSession->m_Diagnostics.end(SessionDiagnostics::End::SessionTakenOver, errorCode);
@@ -196,7 +200,15 @@ void Session::clConnectionTerminated(int errorCode)
             s_ActiveSession->m_Lifecycle.requestRecovery()) {
         qWarning("PLANK transport ended (%d); starting responsive reconnect",
                     errorCode);
+#ifdef PLANK_QT_SESSION
         emit s_ActiveSession->qtReconnectRequested();
+#else
+        s_ActiveSession->m_ReconnectRequested.store(true);
+        SDL_Event event {};
+        event.type = SDL_EVENT_USER;
+        event.user.code = SDL_CODE_PLANK_RECONNECT;
+        SDL_PushEvent(&event);
+#endif
         return;
     }
 
@@ -266,16 +278,28 @@ void Session::openNewConnection()
 
 void Session::requestSessionQuit(SessionDiagnostics::End reason)
 {
-    if (s_ActiveSession && reason != SessionDiagnostics::End::Unknown)
+    if (!s_ActiveSession) return;
+    if (reason != SessionDiagnostics::End::Unknown)
         s_ActiveSession->m_Diagnostics.end(reason);
-    if (s_ActiveSession && s_ActiveSession->m_RendererFactory) {
-        emit s_ActiveSession->qtQuitRequested();
-    }
+#ifdef PLANK_QT_SESSION
+    emit s_ActiveSession->qtQuitRequested();
+#else
+    SDL_Event event {};
+    event.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&event);
+#endif
 }
 
 void Session::requestDecoderReset()
 {
-    if (s_ActiveSession) emit s_ActiveSession->qtDecoderResetRequested();
+    if (!s_ActiveSession) return;
+#ifdef PLANK_QT_SESSION
+    emit s_ActiveSession->qtDecoderResetRequested();
+#else
+    SDL_Event event {};
+    event.type = SDL_EVENT_RENDER_DEVICE_RESET;
+    SDL_PushEvent(&event);
+#endif
 }
 
 void Session::clLogMessage(const char* format, ...)
@@ -289,6 +313,8 @@ void Session::clLogMessage(const char* format, ...)
 
 void Session::clConnectionStatusUpdate(int connectionStatus)
 {
+    if (!s_ActiveSession) return;
+#ifdef PLANK_QT_SESSION
     if (s_ActiveSession->m_Lifecycle.recovering() || !s_ActiveSession->m_Preferences->connectionWarnings) return;
     if (connectionStatus == CONN_STATUS_POOR) {
         s_ActiveSession->setPlankReconnectStatus(s_ActiveSession->m_StreamConfig.bitrate > 5000 ?
@@ -296,13 +322,41 @@ void Session::clConnectionStatusUpdate(int connectionStatus)
     } else if (connectionStatus == CONN_STATUS_OKAY) {
         s_ActiveSession->setPlankReconnectStatus("", false);
     }
+#else
+    if (s_ActiveSession->m_Reconnecting.load()) return;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Connection status update: %d",
+                connectionStatus);
+
+    if (!s_ActiveSession->m_Preferences->connectionWarnings) {
+        return;
+    }
+
+    switch (connectionStatus)
+    {
+    case CONN_STATUS_POOR:
+        s_ActiveSession->m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate,
+                                                            s_ActiveSession->m_StreamConfig.bitrate > 5000 ?
+                                                                "Slow connection to PC\nReduce your bitrate" : "Poor connection to PC");
+        s_ActiveSession->m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+        break;
+    case CONN_STATUS_OKAY:
+        s_ActiveSession->m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
+        break;
+    }
+#endif
 }
 
 void Session::clRawHidControl(const unsigned char* data, unsigned int length)
 {
-    if (s_ActiveSession) {
-        s_ActiveSession->m_QtInputCallbacks.invoke([&](QtSessionInput& input) { input.handleRawHidControl(data, length); });
-    }
+    if (!s_ActiveSession) return;
+#ifdef PLANK_QT_SESSION
+    s_ActiveSession->m_QtInputCallbacks.invoke([&](QtSessionInput& input) { input.handleRawHidControl(data, length); });
+#else
+    s_ActiveSession->m_InputCallbacks.invoke([&](SdlInputHandler& input) {
+        input.handleRawHidControl(data, length);
+    });
+#endif
 }
 
 void Session::clVideoBitrateApplied(
@@ -319,28 +373,46 @@ void Session::clVideoBitrateApplied(
     s_ActiveSession->m_ConfirmedBitratePeakKbps.store(
                 static_cast<int>(peakKbps), std::memory_order_relaxed);
 
+#ifndef PLANK_QT_SESSION
+    SDL_Event event {};
+    event.type = SDL_EVENT_USER;
+    event.user.code = SDL_CODE_PLANK_BITRATE_APPLIED;
+    SDL_PushEvent(&event);
+#endif
 }
 
 void Session::clCursorChunk(const unsigned char* data, unsigned int length)
 {
-    if (s_ActiveSession) {
-        s_ActiveSession->m_QtInputCallbacks.invoke([&](QtSessionInput& input) { input.handleCursorShape(data, length); });
-    }
+    if (!s_ActiveSession) return;
+#ifdef PLANK_QT_SESSION
+    s_ActiveSession->m_QtInputCallbacks.invoke([&](QtSessionInput& input) { input.handleCursorShape(data, length); });
+#else
+    s_ActiveSession->m_InputCallbacks.invoke([&](SdlInputHandler& input) {
+        if (input.handleRemoteCursorChunk(data, length)) {
+            SDL_Event event {};
+            event.type = SDL_EVENT_USER;
+            event.user.code = SDL_CODE_PLANK_CURSOR;
+            SDL_PushEvent(&event);
+        }
+    });
+#endif
 }
 
 void Session::clCursorPosition(const unsigned char* data, unsigned int length)
 {
-    if (s_ActiveSession) {
-        s_ActiveSession->m_QtInputCallbacks.invoke([&](QtSessionInput& input) { input.handleCursorPosition(data, length); });
-    }
+    if (!s_ActiveSession) return;
+#ifdef PLANK_QT_SESSION
+    s_ActiveSession->m_QtInputCallbacks.invoke([&](QtSessionInput& input) { input.handleCursorPosition(data, length); });
+#else
     s_ActiveSession->m_InputCallbacks.invoke([&](SdlInputHandler& input) {
         if (input.handleRemoteCursorPosition(data, length)) {
-            SDL_Event event = {};
+            SDL_Event event {};
             event.type = SDL_EVENT_USER;
             event.user.code = SDL_CODE_PLANK_CURSOR_POSITION;
             SDL_PushEvent(&event);
         }
     });
+#endif
 }
 
 void Session::destroyInputHandler()
@@ -398,7 +470,10 @@ bool Session::chooseDecoder(int videoFormat, int width, int height,
                             IVideoDecoder*& chosenDecoder, bool enableIdentityGbr,
                             DecoderCaptureSource captureSource,
                             DecoderEncoderBackend encoderBackend,
-                            IFFmpegRendererFactory* presenter)
+                            IFFmpegRendererFactory* presenter,
+                            SDL_Window* window,
+                            bool enableFramePacing,
+                            DecoderSelectionMode selectionMode)
 {
     DECODER_PARAMETERS params = {};
 
@@ -411,12 +486,17 @@ bool Session::chooseDecoder(int videoFormat, int width, int height,
     params.height = height;
     params.frameRate = frameRate;
     params.videoFormat = videoFormat;
+    params.window = window;
     params.enableVsync = enableVsync;
+    params.enableFramePacing = enableFramePacing;
     params.enableIdentityGbr = enableIdentityGbr;
     params.testOnly = testOnly;
     params.captureSource = captureSource;
     params.encoderBackend = encoderBackend;
     params.rendererFactory = presenter;
+    params.selectionMode = selectionMode;
+    params.presentationLayout = !testOnly && s_ActiveSession ?
+                &s_ActiveSession->m_PresentationLayout : nullptr;
 
     qInfo("V-sync %s",
                 enableVsync ? "enabled" : "disabled");
@@ -527,13 +607,14 @@ int Session::drSubmitDecodeUnit(PDECODE_UNIT du)
 
 Session::DecoderAvailability
 Session::getDecoderAvailability(int videoFormat, int width, int height, int frameRate,
-                                bool enableIdentityGbr)
+                                bool enableIdentityGbr, SDL_Window* testWindow)
 {
     IVideoDecoder* decoder;
 
     if (!chooseDecoder(videoFormat, width, height, frameRate,
                        false, true, decoder, enableIdentityGbr,
-                       decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory)) {
+                       decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory,
+                       testWindow)) {
         return DecoderAvailability::None;
     }
 
@@ -562,7 +643,7 @@ DecoderEncoderBackend Session::decoderEncoderBackend() const
                 DecoderEncoderBackend::NvencDirect : DecoderEncoderBackend::SoftwareCuda;
 }
 
-bool Session::populateDecoderProperties()
+bool Session::populateDecoderProperties(SDL_Window* testWindow)
 {
     IVideoDecoder* decoder;
 
@@ -572,7 +653,8 @@ bool Session::populateDecoderProperties()
                        m_StreamConfig.fps,
                        false, true, decoder,
                        isIdentityGbrEnabledForFormat(m_SupportedVideoFormats.first()),
-                       decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory)) {
+                       decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory,
+                       testWindow)) {
         emit displayLaunchError(decoderFailureMessage(m_SupportedVideoFormats.first()));
         return false;
     }
@@ -1874,6 +1956,13 @@ QString Session::authenticatePlank(NvHTTP& http, bool* greeterConfirmed)
 
 bool Session::initialize(IFFmpegRendererFactory* presenter)
 {
+    SDL_Window* testWindow = nullptr;
+    bool initializedSdlVideo = false;
+    bool keepSdlVideo = false;
+    const auto cleanupProbe = qScopeGuard([&] {
+        if (testWindow) SDL_DestroyWindow(testWindow);
+        if (initializedSdlVideo && !keepSdlVideo) SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    });
     {
         QReadLocker lock(&m_Computer->lock);
         m_PlankLaunchFeatureFlags = m_Computer->outputTopology.launchFeatureFlags(
@@ -1919,10 +2008,38 @@ bool Session::initialize(IFFmpegRendererFactory* presenter)
         return false;
     }
 
+#ifndef PLANK_QT_SESSION
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+        qCritical("SDL video initialization failed: %s", SDL_GetError());
+        return false;
+    }
+    initializedSdlVideo = true;
+    if (!snapshotClientDisplays()) {
+        emit displayLaunchError(tr("Unable to read the Client display layout. Check the connected displays and try again."));
+        return false;
+    }
+#endif
+
     LiInitializeStreamConfiguration(&m_StreamConfig);
     if (!configurePlankLaunchGeometry()) {
         return false;
     }
+
+#ifndef PLANK_QT_SESSION
+    int testX, testY, testWidth, testHeight;
+    getWindowDimensions(testX, testY, testWidth, testHeight);
+    testWindow = SDL_CreateWindow("", testWidth, testHeight,
+                                  SDL_WINDOW_HIDDEN | StreamUtils::getPlatformWindowFlags());
+    if (!testWindow) {
+        // Preserve the plain hidden-window probe when an optional
+        // platform-specific surface cannot be created by the backend.
+        testWindow = SDL_CreateWindow("", testWidth, testHeight, SDL_WINDOW_HIDDEN);
+    }
+    if (!testWindow) {
+        qCritical("Unable to create the video decode test window: %s", SDL_GetError());
+        return false;
+    }
+#endif
 
     qInfo() << "PLANK host version:"
             << m_Computer->plankHostVersion;
@@ -1984,7 +2101,7 @@ bool Session::initialize(IFFmpegRendererFactory* presenter)
 
     // Check for validation errors/warnings and emit
     // signals for them, if appropriate
-    bool ret = validateLaunch();
+    bool ret = validateLaunch(testWindow);
 
     if (ret) {
         // Video format is now locked in
@@ -1992,13 +2109,14 @@ bool Session::initialize(IFFmpegRendererFactory* presenter)
 
         // Populate decoder-dependent properties.
         // Must be done after validateLaunch() since m_StreamConfig is finalized.
-        ret = populateDecoderProperties();
+        ret = populateDecoderProperties(testWindow);
     }
 
     if (!ret) {
         return false;
     }
 
+    keepSdlVideo = initializedSdlVideo;
     return true;
 }
 
@@ -2017,7 +2135,7 @@ void Session::emitLaunchWarning(QString text)
     }
 }
 
-bool Session::validateLaunch()
+bool Session::validateLaunch(SDL_Window* testWindow)
 {
     m_SupportedVideoFormats.removeByMask(
                 ~m_SupportedVideoFormats.maskByServerCodecModes(m_Computer->serverCodecModeSupport));
@@ -2034,7 +2152,8 @@ bool Session::validateLaunch()
                     m_StreamConfig.width,
                     m_StreamConfig.height,
                     m_StreamConfig.fps,
-                    isIdentityGbrEnabledForFormat(m_SupportedVideoFormats.front()));
+                    isIdentityGbrEnabledForFormat(m_SupportedVideoFormats.front()),
+                    testWindow);
         if (availability == DecoderAvailability::None) {
             m_SupportedVideoFormats.removeFirst();
         }
@@ -4413,6 +4532,7 @@ bool Session::startConnectionAsync(bool reconnecting,
 void Session::cancelConnectionStart()
 {
     m_Diagnostics.end(SessionDiagnostics::End::Cancelled);
+    m_Lifecycle.stop();
     m_ConnectionStartCancelled.store(true);
     m_ActiveSessionTakeoverDecision.store(-1);
 }
@@ -4804,7 +4924,26 @@ bool Session::resolvePlankDesktopConflict(std::unique_ptr<NvHTTP>& http,
 
 void Session::setPlankReconnectStatus(const char* text, bool warning)
 {
+#ifdef PLANK_QT_SESSION
     emit qtReconnectStatusChanged(QString::fromUtf8(text), warning);
+#else
+    const bool nativeStatus = m_PlankToolbar &&
+            m_PlankToolbar->setReconnectStatus(QString::fromUtf8(text), warning);
+    // Reconnect pauses video, so an overlay alone cannot reliably repaint.
+    // Use the native local surface on Wayland; keep the existing fallback for
+    // other presentation platforms without duplicating the message.
+    m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
+    if (!nativeStatus && text[0] != '\0') {
+        m_OverlayManager.setOverlayColor(Overlay::OverlayStatusUpdate,
+                    warning ? SDL_Color{0xCC, 0x00, 0x00, 0xFF} : SDL_Color{0xE0, 0xE0, 0xE0, 0xFF});
+        m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, text);
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+    }
+    if (text[0] != '\0') {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "PLANK reconnect status (%s): %s",
+                    nativeStatus ? "native local surface" : "video overlay fallback", text);
+    }
+#endif
 }
 
 bool Session::beginPlankReconnect(
@@ -4814,7 +4953,16 @@ bool Session::beginPlankReconnect(
         return false;
     }
 
+#ifndef PLANK_QT_SESSION
+    // Explicit Apply and transport failure enter the same lifecycle. The SDL
+    // frontend owns its legacy event-loop flags alongside that shared state.
+    if (!m_Lifecycle.recoveryPending()) m_Lifecycle.requestRecovery();
+#endif
     if (!m_Lifecycle.beginRecovery()) return false;
+#ifndef PLANK_QT_SESSION
+    m_ReconnectRequested.store(false);
+    m_Reconnecting.store(true);
+#endif
     m_ReconnectGreeterConfirmed.store(false);
     const bool noticeFresh = m_DesktopHandoffNoticeDeadline.exchange(0) > SDL_GetTicks();
     const bool greeterConfirmed = m_AuthenticatedGreeter.exchange(false);
@@ -5063,6 +5211,11 @@ bool Session::finishPlankReconnect(
         m_UnexpectedTermination = true;
     }
 
+#ifndef PLANK_QT_SESSION
+    m_Reconnecting.store(false);
+    m_ReconnectRequested.store(false);
+    if (success) success = m_Lifecycle.recovered();
+#endif
     m_ReconnectGreeterConfirmed.store(false);
     m_DesktopHandoffNoticeDeadline.store(0);
     m_DesktopHandoffRetryDeadline.store(0);
@@ -5401,7 +5554,7 @@ void Session::execInternal()
     }
 
     // If the connection failed, clean up and abort the connection.
-    if (!m_AsyncConnectionSuccess) {
+    if (!m_AsyncConnectionSuccess || !m_Lifecycle.started()) {
         m_Diagnostics.end(SessionDiagnostics::End::StartupFailed);
         destroyInputHandler();
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -6383,7 +6536,9 @@ void Session::execInternal()
                                    enableVsync, false,
                                    s_ActiveSession->m_VideoDecoder,
                                    isIdentityGbrEnabledForFormat(m_ActiveVideoFormat),
-                                   decoderCaptureSource(), decoderEncoderBackend())) {
+                                   decoderCaptureSource(), decoderEncoderBackend(), nullptr,
+                                   m_Window, false,
+                                   DecoderSelectionMode::PreferExactHardwareThenSoftware)) {
                     m_DecoderLock.unlock();
                     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                                  "Failed to recreate decoder after reset");
@@ -6599,6 +6754,7 @@ void Session::execInternal()
     }
 
 DispatchDeferredCleanup:
+    m_Lifecycle.stop();
     // Give the local desktop back before waiting for any network worker.
     // In particular, emergency disconnect must release immersive capture
     // even while a reconnect is still unwinding.
