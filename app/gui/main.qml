@@ -514,8 +514,6 @@ ApplicationWindow {
         // stray click beside it cannot throw away what was typed.
         width: Math.min(640, parent.width - 40)
         height: Math.min(implicitHeight, parent.height - 20)
-        modal: true
-        closePolicy: Popup.CloseOnEscape
 
         function suggestedNickname(address) {
             var value = address.trim()
