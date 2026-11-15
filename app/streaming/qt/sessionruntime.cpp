@@ -1,16 +1,24 @@
+#include <QtGlobal>
+#include <QDebug>
+#include "../monotonicclock.h"
 #include "sessionruntime.h"
 #include "../../clientidentity.h"
 #include "../session.h"
+#include "../plankpresentation.h"
 #include "../../backend/hostrecovery.h"
+#include "../../backend/collaboration.h"
 #include "../../backend/clientdisplays.h"
+#include "../../backend/clientdisplayprobe.h"
 #include "../../backend/nvhttp.h"
+#include "../../settings/plankclientpolicy.h"
 #include "../audio/microphone.h"
 #include "../camera/camera.h"
 #include <plank_transport_pointer.h>
 #ifdef Q_OS_MACOS
 #include "../../macapplication.h"
 #include "../macclipboardsync.h"
-#include "../streamutils.h"
+#include "../macfileclipboard.h"
+#include "../macdisplays.h"
 #endif
 
 #include <QEvent>
@@ -24,8 +32,18 @@
 QtSessionRuntime::QtSessionRuntime(Session* session) : QObject(session), m_Session(session)
 {
     m_Input = std::make_unique<QtSessionInput>();
+#ifdef Q_OS_MACOS
+    m_Input->setPasteHandler([this] {
+        if (!m_Session->clipboardSyncEnabled()) return true;
+        return m_Session->beginFileClipboardPasteOnMainThread() ||
+               m_Session->deferTextClipboardPasteOnMainThread();
+    });
+#endif
 #ifdef Q_OS_LINUX
     m_WindowGuard = std::make_unique<QtWaylandSessionGuard>();
+    if (PlankClientPolicy().metrics().enabled) {
+        m_Input->setPenObserver([session](const PlankPenActivity& activity) { session->publishPenMetrics(activity); });
+    }
 #endif
     m_TargetBitrate = session->m_PlankBitrateKbps;
     m_CapturePolicy = session->m_Preferences->captureSysKeysMode;
@@ -35,28 +53,40 @@ QtSessionRuntime::QtSessionRuntime(Session* session) : QObject(session), m_Sessi
 #ifdef Q_OS_MACOS
     connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this] { updateFocus(); });
     m_Input->setNativeFocus([this] {
-        if (m_Stop.load()) return false;
+        if (m_Session->m_Lifecycle.stopping()) return false;
         for (const auto& shell : m_Windows)
             if (!shell->surface().displayMenuOpen() && shell->ownsKeyboard()) return true;
         return false;
     });
 #endif
-    connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this](QScreen* removed) {
-        bool inUse = false;
-        for (int i = 0; i < m_Screens.size(); ++i)
-            inUse |= m_Screens[i] == removed && (i == 0 || (m_Fullscreen && m_SpanDisplays));
-        if (inUse) {
-            emit m_Session->displayLaunchError(tr("A session display was disconnected. Reconnect using the current Client display layout."));
-            stop(); return;
-        }
-        for (auto& shell : m_Windows) shell->surface().setDisplayMode(false, false);
+    m_DisplayDebounce.setSingleShot(true);
+    m_DisplayDebounce.setInterval(1500);
+    connect(&m_DisplayDebounce, &QTimer::timeout, this, &QtSessionRuntime::observeDisplays);
+    const auto watchScreen = [this](QScreen* screen) {
+        connect(screen, &QScreen::geometryChanged, this, [this] { m_DisplayDebounce.start(); });
+        connect(screen, &QScreen::logicalDotsPerInchChanged, this, [this] { m_DisplayDebounce.start(); });
+    };
+    for (auto* screen : QGuiApplication::screens()) watchScreen(screen);
+    connect(qGuiApp, &QGuiApplication::screenAdded, this, [this, watchScreen](QScreen* screen) {
+        watchScreen(screen); m_DisplayDebounce.start();
     });
+    connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this] {
+        // QWindow migrates to a surviving monitor. Preserve the Host desktop
+        // while the observation settles and the user chooses Apply or Keep.
+        m_Input->releaseAll();
+        m_CollapsedDisplay = true;
+        showPresentationWindows(); updateGeometry();
+        m_DisplayDebounce.start();
+    });
+    connect(session, &Session::qtDisplayLayoutApplyRequested, this,
+            &QtSessionRuntime::applyDisplayLayout, Qt::QueuedConnection);
+    session->m_QtPreparePresentation = [this] { return preparePresentation(); };
     connect(m_Input.get(), &QtSessionInput::shortcutRequested, this, &QtSessionRuntime::handleShortcut);
     connect(m_Input.get(), &QtSessionInput::pointerCaptureFailed, this, [this](const QString& reason) {
         emit m_Session->displayLaunchError(reason); stop();
     });
     connect(m_Input.get(), &QtSessionInput::pointerCaptureNotice, this, [this](const QString& reason) {
-        m_DisplayNotice = reason; m_DisplayNoticeDeadline = SDL_GetTicks() + 5000;
+        m_DisplayNotice = reason; m_DisplayNoticeDeadline = PlankClock::milliseconds() + 5000;
         setStatus(QString());
     });
 #ifdef Q_OS_MACOS
@@ -90,13 +120,18 @@ QtSessionRuntime::QtSessionRuntime(Session* session) : QObject(session), m_Sessi
         if (m_Launcher) { m_Launcher->show(); m_Launcher->raise(); m_Launcher->requestActivate(); }
     });
     connect(session, &Session::connectionStarted, this, [this] {
-        if (m_Stop.load()) return;
+        if (m_Session->m_Lifecycle.stopping()) return;
         showPresentationWindows();
         updateGeometry();
     });
 #ifdef Q_OS_MACOS
     connect(static_cast<MacApplication*>(qGuiApp), &MacApplication::exitRequested, this, &QtSessionRuntime::stop);
 #endif
+    connect(session, &Session::qtCollaborationChanged, this, [this] {
+        m_Input->releaseAll();
+        setInputEnabled(m_InputGrabbed);
+        updateFocus();
+    }, Qt::QueuedConnection);
     connect(session, &Session::qtQuitRequested, this, &QtSessionRuntime::stop, Qt::QueuedConnection);
     connect(session, &Session::qtDecoderResetRequested, this, [this] { request(Command::ResetDecoder); }, Qt::QueuedConnection);
     connect(session, &Session::qtReconnectRequested, this, [this] { request(Command::Reconnect); }, Qt::QueuedConnection);
@@ -124,64 +159,85 @@ bool QtSessionRuntime::snapshotDisplays()
 {
     const auto screens = QGuiApplication::screens();
     auto& session = *m_Session;
-    session.diagnosticPhase(SessionDiagnostics::Phase::CreatingWindow);
+    const auto probe = ClientDisplayProbe::probe();
+    if (screens.isEmpty() || probe.isEmpty()) return false;
     session.m_ClientDisplays.clear();
+    session.m_ClientDisplayProbe = probe;
+    session.m_GuiDisplaySnapshot.publish(probe);
     session.m_TargetDisplayId = 0;
     ClientDisplays::Selection selection;
     {
         QReadLocker lock(&session.m_Computer->lock);
-        selection.names = session.m_Computer->plankSessionClientDisplays;
-        selection.target = session.m_Computer->plankSessionTargetDisplay;
-        selection.notice = session.m_Computer->plankSessionDisplayNotice;
-        if (selection.names.isEmpty()) {
-            auto* target = m_Launcher ? m_Launcher->screen() : QGuiApplication::primaryScreen();
-            selection = ClientDisplays::resolve(session.m_Computer->plankClientDisplays,
-                ClientDisplays::snapshot(), target ? target->name() : QString());
-        }
+        auto* target = m_Launcher ? m_Launcher->screen() : QGuiApplication::primaryScreen();
+        selection = ClientDisplays::resolve(session.m_Computer->plankClientDisplays,
+            ClientDisplays::snapshot(), target ? target->name() : QString());
     }
     m_DisplayNotice = selection.notice;
     for (int index = 0; index < screens.size(); ++index) {
         auto* screen = screens[index];
-        if (!selection.names.contains(screen->name())) continue;
         const auto bounds = screen->geometry();
-        const auto pixels = QSize(qRound(bounds.width() * screen->devicePixelRatio()),
-                                  qRound(bounds.height() * screen->devicePixelRatio()));
+        const QSize pixels(qRound(bounds.width() * screen->devicePixelRatio()),
+                           qRound(bounds.height() * screen->devicePixelRatio()));
         if (!bounds.isValid() || !pixels.isValid()) return false;
         Session::ClientDisplaySnapshot display;
-        // Opaque snapshot identifier, not passed to any SDL display API.
         display.displayId = index + 1;
         display.logicalBounds = {bounds.x(), bounds.y(), bounds.width(), bounds.height()};
         display.nativeSize = pixels;
 #ifdef Q_OS_MACOS
-        SDL_DisplayMode mode{};
-        SDL_Rect matched{};
-        if (!StreamUtils::getMacCurrentDisplayModeForBounds(display.logicalBounds, &mode, &matched, m_Fullscreen)) return false;
-        display.macMatchedBounds = QRect(matched.x, matched.y, matched.w, matched.h);
-        display.macBackingSize = QSize(mode.w, mode.h);
+        if (!MacDisplays::currentModeForBounds(bounds, display.macBackingSize,
+                                               display.macMatchedBounds, m_Fullscreen)) return false;
         display.nativeSize = display.macBackingSize;
 #endif
+        display.probeView = ClientDisplayProbe::forSessionDisplay(bounds, display.nativeSize, probe);
+        if (display.probeView.key.isEmpty()) return false;
+#ifdef Q_OS_MACOS
+        display.matchTarget = display.macBackingSize;
+#else
+        display.matchTarget = NvOutputTopology::clientMatchTarget(display.probeView);
+#endif
         display.primary = screen->name() == selection.target;
+        display.legacySelected = selection.names.contains(screen->name());
         if (display.primary) session.m_TargetDisplayId = display.displayId;
         session.m_ClientDisplays.append(display);
     }
     auto& displays = session.m_ClientDisplays;
-    if (displays.isEmpty() || displays.size() != selection.names.size()) return false;
     std::sort(displays.begin(), displays.end(), [](const auto& a, const auto& b) {
-        return std::tie(a.logicalBounds.x, a.logicalBounds.y) < std::tie(b.logicalBounds.x, b.logicalBounds.y);
+        return std::make_pair(a.logicalBounds.x, a.logicalBounds.y) < std::make_pair(b.logicalBounds.x, b.logicalBounds.y);
     });
     if (!session.m_TargetDisplayId) session.m_TargetDisplayId = displays.first().displayId;
-    session.m_MultiDisplayPresentationAvailable = displays.size() == 2;
-    if (displays.size() == 2) {
-        const auto& a = displays[0].logicalBounds;
-        const auto& b = displays[1].logicalBounds;
-        session.m_MultiDisplayPresentationAvailable = a.x + a.w <= b.x && a.y < b.y + b.h && b.y < a.y + a.h;
-    }
-    m_SpanDisplays = session.m_MultiDisplayPresentationAvailable;
+    session.m_MultiDisplayPresentationAvailable = std::count_if(displays.cbegin(), displays.cend(),
+        [](const auto& display) { return display.legacySelected; }) > 1;
+    m_SpanDisplays = selection.names.size() > 1;
     int x = 0;
     for (auto& display : displays) {
         display.canvasRect = QRect(QPoint(x, 0), display.nativeSize);
         x += display.nativeSize.width();
     }
+    // Choose the first visible surface from the same saved plan the worker
+    // will validate. Excluded monitors stay hidden even during GPU startup.
+    if (!m_Worker && !session.isCollaborator()) {
+        QString policy;
+        NvOutputTopology topology;
+        int flags = 0;
+        {
+            QReadLocker lock(&session.m_Computer->lock);
+            policy = session.m_Computer->plankHostLayout;
+            topology = session.m_Computer->outputTopology;
+            flags = topology.launchFeatureFlags(session.m_Computer->plankFeatureFlags);
+        }
+        if (policy == NvOutputTopology::MatchClientHostLayout &&
+            session.m_PlankCaptureSource != StreamingPreferences::PLANK_CAPTURE_SCREENCAPTUREKIT) {
+            QVector<NvClientDisplay> planned;
+            for (const auto& display : displays) planned.append(display.probeView);
+            bool exact = true;
+            const int available = topology.displayArrangementPublished() ? flags :
+                flags & ~NvOutputTopology::DisplayArrangementFeature;
+            if (!session.planDisplayArrangement(planned, available, topology, exact)) return false;
+            session.applyArrangementPresentation();
+            m_SpanDisplays = false; // The worker exposes the remaining planned surfaces before its probe.
+        }
+    }
+    m_ObservedProbe = probe;
     return true;
 }
 
@@ -190,9 +246,8 @@ void QtSessionRuntime::start(QWindow* launcher)
     Q_ASSERT(QThread::currentThread() == thread());
     if (m_Started) return;
     m_Started = true;
-    m_Launcher = launcher;
-    m_Session->m_QtWindow = launcher;
     m_Session->m_ThreadedExec = true;
+    m_Launcher = launcher;
     m_PreviousQuitOnLastWindow = QGuiApplication::quitOnLastWindowClosed();
     QGuiApplication::setQuitOnLastWindowClosed(false);
     QCoreApplication::instance()->installEventFilter(this);
@@ -212,7 +267,7 @@ void QtSessionRuntime::start(QWindow* launcher)
     auto presentationScreens = screens;
     auto* target = screens[int(m_Session->m_TargetDisplayId) - 1];
     const bool canSpan = ClientDisplays::canSpan(ClientDisplays::snapshot());
-    if (!canSpan) presentationScreens = {target};
+    Q_UNUSED(canSpan);
     QSize desktop;
     {
         QReadLocker lock(&m_Session->m_Computer->lock);
@@ -223,108 +278,13 @@ void QtSessionRuntime::start(QWindow* launcher)
         return (a == target) > (b == target);
     });
     for (auto* screen : presentationScreens) {
-        const bool primary = screen == target;
-        auto shell = std::make_unique<QtPlatformSessionShell>();
-        shell->setScreen(screen);
-        m_Screens.append(shell->screen());
-        shell->setTitle(m_Session->m_Computer->name + QStringLiteral(" — ") +
-                        QString::fromLatin1(PlankClientIdentity::displayName));
-#ifdef Q_OS_MACOS
-        shell->setKeepAwake(primary && m_Session->m_Preferences->keepAwake);
-        connect(shell.get(), &QtMetalSessionShell::renderingFailed, this, [this](QString reason) {
-            emit m_Session->displayLaunchError(reason); stop();
-        });
-#endif
-        shell->prepareForSession(desktop, m_Fullscreen && (primary || m_SpanDisplays));
-        if (m_Stop.load()) return;
-        auto& surface = shell->surface();
-        shell->installEventFilter(this);
-        surface.installEventFilter(this);
-        surface.setDisplayMode(canSpan, m_SpanDisplays);
-        surface.setLiveSession(true);
-        surface.setStatusText(tr("Connecting to workstation…"));
-        surface.setBitrateKbps(m_Session->m_PlankBitrateKbps);
-        surface.setPinned(m_Session->m_Preferences->plankToolbarPinned);
-        surface.setStatisticsVisible(m_Session->m_Preferences->showPerformanceOverlay);
-        surface.setDragMapper([this, &surface](QPointF logical, QPointF& stream) {
-            if (!m_Fullscreen || !m_SpanDisplays || m_Windows.size() < 2 || !surface.screen())
-                return surface.presentation().toStream(logical, stream, true);
-            QVector<QtSessionOutputGeometry> outputs;
-            for (const auto& window : m_Windows) {
-                if (window->isVisible() && window->screen())
-                    outputs.append({QRectF(window->screen()->geometry().topLeft(), window->surface().size()),
-                                    window->surface().presentation()});
-            }
-            return qtMapDraggedPointer(outputs, QPointF(surface.screen()->geometry().topLeft()) + logical, stream);
-        });
-        connect(&surface, &QtSessionWindow::physicalMouseActivity, m_Input.get(), &QtSessionInput::activateMouse);
-        connect(&surface, &QtSessionWindow::remoteMotion, m_Input.get(), &QtSessionInput::mouseMotion);
-        connect(&surface, &QtSessionWindow::remoteButton, this,
-                [this](int button, bool down, QPointF position) {
-            m_Input->mouseButton(button, down, position);
-        });
-        connect(&surface, &QtSessionWindow::immersiveMouseRequested, this,
-                [this, window = shell.get()] { toggleImmersiveMouse(window); });
-#ifdef Q_OS_MACOS
-        connect(shell.get(), &QtMetalSessionShell::pointerDelta, m_Input.get(), &QtSessionInput::mouseDelta);
-        connect(shell.get(), &QtMetalSessionShell::pointerCaptureLost, m_Input.get(), &QtSessionInput::releaseAll);
-        connect(shell.get(), &QtMetalSessionShell::tabletPointerInput, m_Input.get(), &QtSessionInput::cancelPointerCapture);
-#endif
-        connect(&surface, &QtSessionWindow::remoteWheel, m_Input.get(), &QtSessionInput::wheel);
-        connect(&surface, &QtSessionWindow::remoteKey, m_Input.get(), &QtSessionInput::key);
-#ifdef Q_OS_MACOS
-        connect(&surface, &QtSessionWindow::remotePen, m_Input.get(), &QtSessionInput::normalizedPen);
-        connect(&surface, &QtSessionWindow::remotePenCancelled, m_Input.get(), &QtSessionInput::penLeave);
-        surface.setNativeKeyCapture([this] { return m_Input->capturesNativeKeys(); });
-#endif
-        connect(m_Input.get(), &QtSessionInput::cursorShape, &surface, &QtSessionWindow::setCursorShape);
-        connect(m_Input.get(), &QtSessionInput::cursorPosition, &surface, &QtSessionWindow::setHostCursorPosition);
-        connect(m_Input.get(), &QtSessionInput::tabletActive, &surface, &QtSessionWindow::setTabletActive);
-        connect(&surface, &QtSessionWindow::toolbarChanged, this, [&surface, this] {
-            auto& preferences = *m_Session->m_Preferences;
-            if (preferences.plankToolbarPinned != surface.pinned()) {
-                preferences.plankToolbarPinned = surface.pinned(); preferences.save();
-                for (auto& window : m_Windows) window->surface().setPinned(surface.pinned());
-            }
-        });
-        connect(&surface, &QtSessionWindow::bitrateRequested, this, [this](int bitrate) {
-            if (bitrate == m_TargetBitrate) return;
-            m_TargetBitrate = bitrate; m_RecoveryBitrate.store(bitrate);
-            m_BitrateChanged = SDL_GetTicks();
-            for (auto& window : m_Windows) window->surface().setBitrateKbps(bitrate);
-        });
-        connect(&surface, &QtSessionWindow::microphoneRequested, this, [this] {
-            m_Session->m_MicrophoneRequested.store(!m_Session->m_MicrophoneRequested.load());
-        });
-        connect(&surface, &QtSessionWindow::cameraRequested, this, [this] {
-            m_Session->m_CameraRequested.store(!m_Session->m_CameraRequested.load());
-        });
-        connect(&surface, &QtSessionWindow::newConnectionRequested, this, [this] {
-            m_Session->openNewConnection();
-        });
-        connect(&surface, &QtSessionWindow::disconnectRequested, this, [this] {
-            m_Session->m_Diagnostics.end(SessionDiagnostics::End::Toolbar);
-            stop();
-        });
-        connect(&surface, &QtSessionWindow::fullscreenRequested, this, &QtSessionRuntime::toggleFullscreen);
-        connect(&surface, &QtSessionWindow::fullscreenDisplaysRequested, this, [this, owner = shell.get()](bool span) {
-            selectFullscreenDisplays(span, owner);
-        });
-        connect(&surface, &QtSessionWindow::displayMenuChanged, this, &QtSessionRuntime::updateFocus);
-        connect(&surface, &QtSessionWindow::minimizeRequested, this, &QtSessionRuntime::minimize);
-        connect(&surface, &QtSessionWindow::inputRecaptureRequested, this, [this] {
-            if (!m_Streaming || m_Stop.load() || m_ReconnectNoticeDeadline) return;
-            m_InputGrabbed = true;
-            setInputEnabled(true);
-        });
-        connect(&surface, &QtSessionWindow::surfaceSizeChanged, this, &QtSessionRuntime::updateGeometry);
-        connect(shell.get(), &QWindow::windowStateChanged, this, [this] { updateGeometry(); });
-        m_Presenter->addOutput(&surface, {}, primary);
-        m_Windows.push_back(std::move(shell));
+        const auto display = ClientDisplayProbe::forSessionDisplay(screen->geometry(),
+            screen->size() * screen->devicePixelRatio(), m_Session->m_ClientDisplayProbe);
+        addWindow(screen, display.key, screen == target, desktop);
     }
     connect(m_Presenter.get(), &QtVideoPresenter::deviceReady, this, [this](bool available, const QString& reason) {
         m_StartupDeadline.stop();
-        if (m_Stop.load()) return;
+        if (m_Session->m_Lifecycle.stopping()) return;
         if (!available) {
             emit m_Session->displayLaunchError(tr("No exact-format Qt video device is available: %1").arg(reason));
             stop(); return;
@@ -354,6 +314,245 @@ void QtSessionRuntime::start(QWindow* launcher)
     m_Presenter->initializeDevice();
 }
 
+void QtSessionRuntime::addWindow(QScreen* screen, const QString& key, bool primary, QSize desktop)
+{
+    const bool canSpan = QGuiApplication::screens().size() > 1;
+    auto shell = std::make_unique<QtPlatformSessionShell>();
+    shell->setScreen(screen);
+    m_Screens.append(shell->screen());
+    shell->setProperty("plankDisplayKey", key);
+    shell->setTitle(m_Session->m_Computer->name + QStringLiteral(" — ") +
+                    QString::fromLatin1(PlankClientIdentity::displayName));
+#ifdef Q_OS_MACOS
+    shell->setKeepAwake(primary && m_Session->m_Preferences->keepAwake);
+    connect(shell.get(), &QtMetalSessionShell::renderingFailed, this, [this](QString reason) {
+        emit m_Session->displayLaunchError(reason); stop();
+    });
+#endif
+    shell->prepareForSession(desktop, m_Fullscreen && (primary || m_SpanDisplays));
+    if (m_Session->m_Lifecycle.stopping()) return;
+    auto& surface = shell->surface();
+    shell->installEventFilter(this);
+    surface.installEventFilter(this);
+    surface.setDisplayMode(canSpan, m_SpanDisplays);
+    surface.setLiveSession(true);
+    surface.setStatusText(tr("Connecting to workstation…"));
+    surface.setBitrateKbps(m_Session->m_PlankBitrateKbps);
+    surface.setPinned(m_Session->m_Preferences->plankToolbarPinned);
+    surface.setStatisticsVisible(m_Session->m_Preferences->showPerformanceOverlay);
+    surface.setDragMapper([this, &surface, owner = shell.get()](QPointF logical, QPointF& stream) {
+        if (!m_SpanDisplays || m_CollapsedDisplay || m_Windows.size() < 2 || !surface.screen())
+            return surface.presentation().toStream(logical, stream, true);
+        QVector<QtSessionOutputGeometry> outputs;
+        for (const auto& window : m_Windows) {
+            if (window->isVisible() && window->screen())
+                outputs.append({QRectF(window->mapToGlobal(QPoint()), window->surface().size()),
+                                window->surface().presentation()});
+        }
+        return qtMapDraggedPointer(outputs, QPointF(owner->mapToGlobal(QPoint())) + logical, stream);
+    });
+    connect(&surface, &QtSessionWindow::physicalMouseActivity, m_Input.get(), &QtSessionInput::activateMouse);
+    connect(&surface, &QtSessionWindow::remoteMotion, m_Input.get(), &QtSessionInput::mouseMotion);
+    connect(&surface, &QtSessionWindow::remoteButton, this,
+            [this](int button, bool down, QPointF position) {
+        m_Input->mouseButton(button, down, position);
+    });
+    connect(&surface, &QtSessionWindow::immersiveMouseRequested, this,
+            [this, window = shell.get()] { toggleImmersiveMouse(window); });
+#ifdef Q_OS_MACOS
+    connect(shell.get(), &QtMetalSessionShell::pointerDelta, m_Input.get(), &QtSessionInput::mouseDelta);
+    connect(shell.get(), &QtMetalSessionShell::pointerCaptureLost, m_Input.get(), &QtSessionInput::releaseAll);
+    connect(shell.get(), &QtMetalSessionShell::tabletPointerInput, m_Input.get(), &QtSessionInput::cancelPointerCapture);
+#endif
+    connect(&surface, &QtSessionWindow::remoteWheel, m_Input.get(), &QtSessionInput::wheel);
+    connect(&surface, &QtSessionWindow::remoteKey, m_Input.get(), &QtSessionInput::key);
+#ifdef Q_OS_MACOS
+    connect(&surface, &QtSessionWindow::remotePen, m_Input.get(), &QtSessionInput::normalizedPen);
+    connect(&surface, &QtSessionWindow::remotePenCancelled, m_Input.get(), &QtSessionInput::penLeave);
+    surface.setNativeKeyCapture([this] { return m_Input->capturesNativeKeys(); });
+#endif
+    connect(m_Input.get(), &QtSessionInput::cursorShape, &surface, &QtSessionWindow::setCursorShape);
+    connect(m_Input.get(), &QtSessionInput::cursorPosition, &surface, &QtSessionWindow::setHostCursorPosition);
+    connect(m_Input.get(), &QtSessionInput::tabletActive, &surface, &QtSessionWindow::setTabletActive);
+    connect(&surface, &QtSessionWindow::toolbarChanged, this, [&surface, this] {
+        auto& preferences = *m_Session->m_Preferences;
+        if (preferences.plankToolbarPinned != surface.pinned()) {
+            preferences.plankToolbarPinned = surface.pinned(); preferences.save();
+            for (auto& window : m_Windows) window->surface().setPinned(surface.pinned());
+        }
+    });
+    connect(&surface, &QtSessionWindow::bitrateRequested, this, [this](int bitrate) {
+        if (bitrate == m_TargetBitrate) return;
+        m_TargetBitrate = bitrate; m_RecoveryBitrate.store(bitrate);
+        m_BitrateChanged = PlankClock::milliseconds();
+        for (auto& window : m_Windows) window->surface().setBitrateKbps(bitrate);
+    });
+    connect(&surface, &QtSessionWindow::filesRequested, this, [this] {
+#ifdef Q_OS_MACOS
+        if (m_Session->clipboardSyncEnabled())
+            if (const auto files = m_Session->fileClipboard()) files->chooseFilesOnMainThread();
+#endif
+    });
+    connect(&surface, &QtSessionWindow::microphoneRequested, this, [this] {
+        m_Session->m_MicrophoneRequested.store(!m_Session->m_MicrophoneRequested.load());
+    });
+    connect(&surface, &QtSessionWindow::cameraRequested, this, [this] {
+        m_Session->m_CameraRequested.store(!m_Session->m_CameraRequested.load());
+    });
+    connect(&surface, &QtSessionWindow::newConnectionRequested, this, [this] {
+        m_Session->openNewConnection();
+    });
+    connect(&surface, &QtSessionWindow::disconnectRequested, this, [this] {
+        m_Session->m_Diagnostics.end(SessionDiagnostics::End::Toolbar);
+        stop();
+    });
+    connect(&surface, &QtSessionWindow::fullscreenRequested, this, &QtSessionRuntime::toggleFullscreen);
+    connect(&surface, &QtSessionWindow::fullscreenDisplaysRequested, this, [this, owner = shell.get()](bool span) {
+        selectFullscreenDisplays(span, owner);
+    });
+    connect(&surface, &QtSessionWindow::screensApplyRequested, this, &QtSessionRuntime::applyDisplayLayout);
+    connect(&surface, &QtSessionWindow::screensKeepRequested, this, [this] {
+        m_DisplayChanges.keep(); updateScreensPrompt();
+    });
+    connect(&surface, &QtSessionWindow::screensSetupRequested, this, [this] {
+        if (m_Launcher) { m_Launcher->show(); m_Launcher->raise(); m_Launcher->requestActivate(); }
+        emit m_Session->displaySetupRequested();
+    });
+    connect(&surface, &QtSessionWindow::displayMenuChanged, this, &QtSessionRuntime::updateFocus);
+    connect(&surface, &QtSessionWindow::minimizeRequested, this, &QtSessionRuntime::minimize);
+    connect(&surface, &QtSessionWindow::inputRecaptureRequested, this, [this] {
+        if (!m_Session->m_Lifecycle.streaming() || m_Session->m_Lifecycle.stopping() || m_ReconnectNoticeDeadline) return;
+        m_InputGrabbed = true;
+        setInputEnabled(true);
+    });
+    connect(&surface, &QtSessionWindow::surfaceSizeChanged, this, &QtSessionRuntime::updateGeometry);
+    connect(shell.get(), &QWindow::windowStateChanged, this, [this] { updateGeometry(); });
+    m_Presenter->addOutput(&surface, {}, primary);
+    m_Windows.push_back(std::move(shell));
+}
+
+QtPlatformSessionShell* QtSessionRuntime::windowForKey(const QString& key) const
+{
+    for (const auto& shell : m_Windows)
+        if (shell->property("plankDisplayKey").toString() == key) return shell.get();
+    return nullptr;
+}
+
+bool QtSessionRuntime::preparePresentation()
+{
+    auto& s = *m_Session;
+    QVector<NvClientDisplay> displays;
+    for (const auto& display : s.m_ClientDisplays) displays.append(display.probeView);
+    NvOutputTopology topology;
+    { QReadLocker lock(&s.m_Computer->lock); topology = s.m_Computer->outputTopology; }
+    auto layout = qtSessionLayout(s.m_DisplayPlan, displays, topology,
+        QSize(s.m_StreamConfig.width, s.m_StreamConfig.height), s.isCollaborator(), s.m_CollaborationOutputId);
+    if (!layout.desktopSize.isValid())
+        layout.desktopSize = QSize(topology.desktopWidth, topology.desktopHeight);
+    if (!layout.desktopSize.isValid()) layout.desktopSize = layout.streamSize;
+    if (layout.guest && layout.outputs.isEmpty()) {
+        emit s.displayLaunchError(tr("The owner's captured display is no longer available. Join the session again."));
+        return false;
+    }
+    return m_LayoutHandoff.request(this, [this, layout, displays] {
+        return !m_Closing && applyPresentation(layout, displays);
+    });
+}
+
+bool QtSessionRuntime::applyPresentation(const QtSessionLayout& layout,
+                                         const QVector<NvClientDisplay>& probe)
+{
+    if (m_Closing || QGuiApplication::screens().isEmpty()) return false;
+    m_Input->releaseAll();
+    m_Layout = layout;
+    m_LayoutProbe = probe;
+    m_StreamSize = layout.streamSize;
+    if (m_MarkApplied || !m_BaselineApplied) m_CollapsedDisplay = false;
+    m_Views.clear();
+    auto* fallback = m_Windows.empty() ? QGuiApplication::primaryScreen() : m_Windows.front()->screen();
+    if (!fallback || !QGuiApplication::screens().contains(fallback)) fallback = QGuiApplication::primaryScreen();
+    if (!fallback) fallback = QGuiApplication::screens().first();
+    QtPlatformSessionShell* primary = nullptr;
+    const auto current = ClientDisplayProbe::probe();
+    QVector<QRect> guestRects;
+    for (const auto& output : layout.outputs) guestRects.append(output.desktopPixels.toRect());
+    const auto placement = layout.guest ? PlankCollaboration::windowPlacement(guestRects, fallback->availableGeometry()) : QVector<QRect>();
+    {
+        QScopedValueRollback<bool> changing(m_ChangingPresentation, true);
+        for (int index = 0; index < layout.outputs.size(); ++index) {
+            const auto& output = layout.outputs[index];
+            QScreen* screen = nullptr;
+            if (layout.guest) screen = fallback;
+            else for (auto* candidate : QGuiApplication::screens()) {
+                const auto view = ClientDisplayProbe::forSessionDisplay(candidate->geometry(),
+                    candidate->size() * candidate->devicePixelRatio(), current);
+                if (view.key == output.key) { screen = candidate; break; }
+            }
+            auto* shell = windowForKey(output.key);
+            if (!screen) { m_CollapsedDisplay = true; continue; }
+            if (!shell) { addWindow(screen, output.key, false, layout.desktopSize); shell = m_Windows.back().get(); }
+            shell->setScreen(screen);
+            if (layout.guest && placement.size() == layout.outputs.size()) shell->setGeometry(placement[index]);
+            m_Views.insert(shell, output);
+            if (output.primary || !primary) primary = shell;
+        }
+        if (!layout.planned && !m_Windows.empty()) primary = m_Windows.front().get();
+        if (!primary) {
+            // A selected monitor disappeared during negotiation. Keep a
+            // scaled view of the existing primary output on a surviving seat.
+            if (m_Windows.empty()) addWindow(fallback, QStringLiteral("fallback"), true, layout.desktopSize);
+            primary = m_Windows.front().get();
+            primary->setScreen(fallback);
+            if (!layout.outputs.isEmpty()) m_Views.insert(primary, layout.outputs.first());
+            m_CollapsedDisplay = true;
+        }
+        const auto first = std::find_if(m_Windows.begin(), m_Windows.end(), [primary](const auto& shell) { return shell.get() == primary; });
+        if (first != m_Windows.end()) std::rotate(m_Windows.begin(), first, std::next(first));
+        if (!m_Presenter->setPrimaryOutput(&primary->surface())) return false;
+        if (layout.planned) m_SpanDisplays = layout.outputs.size() > 1;
+        if (layout.guest) m_Fullscreen = false;
+        for (auto& shell : m_Windows)
+            shell->surface().setDisplayMode(layout.planned ? layout.outputs.size() > 1 :
+                ClientDisplays::canSpan(ClientDisplays::snapshot()), m_SpanDisplays && !m_CollapsedDisplay);
+    }
+    showPresentationWindows();
+    updateGeometry();
+    return true;
+}
+
+void QtSessionRuntime::observeDisplays()
+{
+    if (m_Closing || !m_BaselineApplied || m_Session->isCollaborator()) return;
+    const auto observed = ClientDisplayProbe::probe();
+    if (observed.isEmpty() || !m_DisplayChanges.observe(observed)) return;
+    m_ObservedProbe = observed;
+    m_CollapsedDisplay = !m_DisplayChanges.matchesApplied();
+    if (!m_CollapsedDisplay && m_Layout.planned) applyPresentation(m_Layout, m_LayoutProbe);
+    else { showPresentationWindows(); updateGeometry(); }
+    updateScreensPrompt();
+}
+
+void QtSessionRuntime::updateScreensPrompt()
+{
+    QSettings settings;
+    QString text;
+    if (!m_Session->isCollaborator() && m_DisplayChanges.shouldPrompt(settings))
+        text = tr("Screens changed: %1").arg(ClientDisplayProbe::label(m_ObservedProbe));
+    for (auto& shell : m_Windows) shell->surface().setScreensPrompt(text);
+}
+
+void QtSessionRuntime::applyDisplayLayout()
+{
+    auto& s = *m_Session;
+    if (m_Closing || s.isCollaborator() || !s.m_CanReconnect.load() ||
+        !s.hasPlankCredentials() || !s.m_Lifecycle.requestRecovery()) return;
+    m_ApplyLayoutRequested.store(true);
+    s.m_DisplayReconfigureRequested.store(true);
+    m_MarkApplied = true;
+    for (auto& shell : m_Windows) shell->surface().setScreensPrompt({});
+    request(Command::Reconnect);
+}
+
 bool QtSessionRuntime::eventFilter(QObject* object, QEvent* event)
 {
     if (event->type() == QEvent::Close) {
@@ -381,9 +580,10 @@ bool QtSessionRuntime::eventFilter(QObject* object, QEvent* event)
 
 void QtSessionRuntime::request(Command command)
 {
-    if (m_Stop.load()) return;
+    if (m_Session->m_Lifecycle.stopping()) return;
+    if (command == Command::ResetDecoder && !m_Session->m_Lifecycle.streaming()) return;
     if (command == Command::Reconnect) {
-        m_Streaming = false;
+        if (m_Session->m_Lifecycle.state() != PlankSessionLifecycle::State::RecoveryQueued) return;
         setInputEnabled(false);
         beginRecovery();
     }
@@ -396,10 +596,14 @@ void QtSessionRuntime::request(Command command)
 
 void QtSessionRuntime::stop()
 {
-    if (m_Stop.exchange(true)) return;
+    if (m_Closing) return;
+    m_Closing = true;
+    m_Session->m_Lifecycle.stop();
+    m_LayoutHandoff.cancel();
+    m_Session->m_GuiDisplaySnapshot.cancel();
+    m_DisplayDebounce.stop();
     m_Session->m_ReconnectPolicy.allowUntil(0);
     m_Session->cancelConnectionStart();
-    m_Session->m_ReconnectCancelled.store(true);
     m_Session->m_CanReconnect.store(false);
     m_StartupDeadline.stop();
     m_Tick.stop();
@@ -409,6 +613,10 @@ void QtSessionRuntime::stop()
 #endif
     for (auto& shell : m_Windows) shell->hide();
     if (m_Presenter) m_Presenter->stop(); // also wakes test-frame qualification
+    {
+        std::lock_guard<std::mutex> lock(m_CommandMutex);
+        m_Command = Command::Stop;
+    }
     m_CommandChanged.notify_all();
     if (!m_Worker) QTimer::singleShot(0, this, &QtSessionRuntime::finishWorker);
 }
@@ -416,29 +624,26 @@ void QtSessionRuntime::stop()
 bool QtSessionRuntime::resetDecoder()
 {
     auto& s = *m_Session;
-    SDL_LockSpinlock(&s.m_DecoderLock);
+    s.m_DecoderLock.lock();
     delete s.m_VideoDecoder;
     s.m_VideoDecoder = nullptr;
-    SDL_UnlockSpinlock(&s.m_DecoderLock);
-    if (m_Stop.load()) return false;
+    s.m_DecoderLock.unlock();
+    if (m_Session->m_Lifecycle.stopping()) return false;
     s.diagnosticPhase(SessionDiagnostics::Phase::CreatingDecoder);
     IVideoDecoder* decoder = nullptr;
-    const bool ready = Session::chooseDecoder(DecoderSelectionMode::PreferExactHardwareThenSoftware,
-        nullptr, s.m_ActiveVideoFormat, s.m_ActiveVideoWidth, s.m_ActiveVideoHeight,
+    const bool ready = Session::chooseDecoder(s.m_ActiveVideoFormat, s.m_ActiveVideoWidth, s.m_ActiveVideoHeight,
         s.m_ActiveVideoFrameRate, true, false, decoder, s.isIdentityGbrEnabledForFormat(s.m_ActiveVideoFormat),
         s.decoderCaptureSource(), s.decoderEncoderBackend(), m_Factory.get());
-    if (!ready || m_Stop.load()) {
+    if (!ready || m_Session->m_Lifecycle.stopping()) {
         if (!ready) s.m_Diagnostics.end(SessionDiagnostics::End::DecoderFailed);
         delete decoder; return false;
     }
     s.m_Diagnostics.decoderReady();
     s.publishDiagnosticLifecycle();
-    SDL_LockSpinlock(&s.m_DecoderLock);
+    s.m_DecoderLock.lock();
     s.m_VideoDecoder = decoder;
-    SDL_UnlockSpinlock(&s.m_DecoderLock);
+    s.m_DecoderLock.unlock();
     LiRequestIdrFrame();
-    const QSize size(s.m_ActiveVideoWidth, s.m_ActiveVideoHeight);
-    QMetaObject::invokeMethod(this, [this, size] { setStreaming(size); }, Qt::QueuedConnection);
     return true;
 }
 
@@ -446,57 +651,69 @@ void QtSessionRuntime::workerMain()
 {
     auto& s = *m_Session;
     for (;;) {
-        if (m_Stop.load()) return;
+        if (m_Session->m_Lifecycle.stopping()) return;
         if (Session::s_ActiveSessionSemaphore.tryAcquire(1, 50)) break;
     }
     m_OwnsSession = true;
     Session::s_ActiveSession = &s;
     s.m_QtInputCallbacks.publish(m_Input.get());
     s.diagnosticPhase(SessionDiagnostics::Phase::Initializing);
-    bool ready = !m_Stop.load() && s.initialize(m_Factory.get()) && !m_Stop.load();
+    bool ready = !m_Session->m_Lifecycle.stopping() && s.initialize(m_Factory.get()) && !m_Session->m_Lifecycle.stopping();
     if (ready) {
         m_Input->setStreamSize(QSize(s.m_StreamConfig.width, s.m_StreamConfig.height));
         s.diagnosticPhase(SessionDiagnostics::Phase::Negotiating);
-        ready = s.startConnectionAsync() && !m_Stop.load();
+        ready = s.startConnectionAsync() && !m_Session->m_Lifecycle.stopping();
     }
     if (ready) {
-        m_Input->startTablets(LiGetHostFeatureFlags());
-        ready = resetDecoder();
+        m_Input->startTablets(s.isCollaborator() ? 0 : LiGetHostFeatureFlags());
+        ready = preparePresentation() && resetDecoder() && s.m_Lifecycle.started();
     }
-    if (!ready && !m_Stop.load()) emit s.displayLaunchError(tr("The Qt session could not start with the selected video format."));
+    const auto publishStreaming = [this, &s] {
+        const QSize size(s.m_ActiveVideoWidth, s.m_ActiveVideoHeight);
+        QMetaObject::invokeMethod(this, [this, size] { setStreaming(size); }, Qt::QueuedConnection);
+    };
+    if (ready) publishStreaming();
+    // Initialization, connection and decoder failure sites report their own
+    // actionable error. Do not replace it with a second generic format error.
     quint64 nextProbe = 0;
-    while (ready && !m_Stop.load()) {
+    while (ready && !m_Session->m_Lifecycle.stopping()) {
         Command command;
         {
             std::unique_lock<std::mutex> lock(m_CommandMutex);
-            m_CommandChanged.wait_for(lock, std::chrono::milliseconds(100), [this] { return m_Stop.load() || m_Command != Command::None; });
+            m_CommandChanged.wait_for(lock, std::chrono::milliseconds(100), [this] { return m_Session->m_Lifecycle.stopping() || m_Command != Command::None; });
             command = m_Command;
             m_Command = Command::None;
         }
-        if (m_Stop.load()) break;
+        if (m_Session->m_Lifecycle.stopping()) break;
         if (command == Command::Reconnect) {
             m_Input->beginReconnect();
             Session::PlankReconnectState state;
-            if (!s.beginPlankReconnect(state) || m_Stop.load()) break;
+            if (!s.beginPlankReconnect(state) || m_Session->m_Lifecycle.stopping()) break;
             m_Input->resetCursorEpoch();
+            if (m_ApplyLayoutRequested.exchange(false)) {
+                { std::lock_guard<std::mutex> lock(s.m_DecoderLock);
+                  delete s.m_VideoDecoder; s.m_VideoDecoder = nullptr; }
+                state.retainedRenderer = false;
+                if (!m_LayoutHandoff.request(this, [this] { return snapshotDisplays(); })) break;
+            }
             s.m_StreamConfig.bitrate = m_RecoveryBitrate.load();
-            const bool connected = s.runPlankReconnect() && !m_Stop.load();
+            const bool connected = s.runPlankReconnect() && !m_Session->m_Lifecycle.stopping();
             // Use the established recovery state machine. It requests a
             // decoder reset only if format/size changed; otherwise retain it.
             bool needsReset = false;
-            ready = s.finishPlankReconnect(connected, state, &needsReset) && !m_Stop.load();
+            ready = s.finishPlankReconnect(connected, state, &needsReset) && !m_Session->m_Lifecycle.stopping();
             if (ready) m_Input->finishReconnect();
+            if (ready) ready = preparePresentation();
             if (ready && needsReset) ready = resetDecoder();
-            if (ready) {
-                const QSize size(s.m_ActiveVideoWidth, s.m_ActiveVideoHeight);
-                QMetaObject::invokeMethod(this, [this, size] { setStreaming(size); }, Qt::QueuedConnection);
-            }
-        } else if (command == Command::ResetDecoder) {
+            if (ready) ready = s.m_Lifecycle.recovered();
+            if (ready) publishStreaming();
+        } else if (command == Command::ResetDecoder && s.m_Lifecycle.streaming()) {
             ready = resetDecoder();
+            if (ready) publishStreaming();
         }
-        if (!ready || m_Stop.load()) break;
-        const auto now = SDL_GetTicks();
-        if (now >= nextProbe && !s.m_ReconnectRequested.load() && s.m_CanReconnect.load() &&
+        if (!ready || m_Session->m_Lifecycle.stopping()) break;
+        const auto now = PlankClock::milliseconds();
+        if (now >= nextProbe && !s.m_Lifecycle.recoveryPending() && s.m_CanReconnect.load() &&
                 PlankHostRecovery::videoSilent(now, s.m_LastPlankVideoReceived.load()) && !s.m_PlankWorkerInstance.isEmpty()) {
             nextProbe = now + PlankHostRecovery::ProbeIntervalMs;
             try {
@@ -510,15 +727,16 @@ void QtSessionRuntime::workerMain()
     // All shared media state is retired on this worker, before releasing the
     // active-session token or allowing another session to start.
     s.m_CanReconnect.store(false);
-    s.m_ReconnectCancelled.store(true);
-    QMetaObject::invokeMethod(this, [this] { m_Streaming = false; setInputEnabled(false); }, Qt::QueuedConnection);
-    m_Input->shutdown();
+    s.m_Lifecycle.stop();
+    QMetaObject::invokeMethod(this, [this] { setInputEnabled(false); }, Qt::QueuedConnection);
     s.m_QtInputCallbacks.clear();
+    m_Input->shutdown();
     s.stopPlankTransportMediaReceivers();
-    SDL_LockSpinlock(&s.m_DecoderLock);
-    delete s.m_VideoDecoder;
-    s.m_VideoDecoder = nullptr;
-    SDL_UnlockSpinlock(&s.m_DecoderLock);
+    {
+        std::lock_guard<std::mutex> decoderLock(s.m_DecoderLock);
+        delete s.m_VideoDecoder;
+        s.m_VideoDecoder = nullptr;
+    }
     LiStopConnection();
     s.stopPlankTransportDataPlane();
     s.clearPlankReconnectCredentials();
@@ -545,7 +763,7 @@ void QtSessionRuntime::finishWorker()
     }
 #endif
     m_Finished = true;
-    m_Stop.store(true);
+    m_Session->m_Lifecycle.finished();
     m_StartupDeadline.stop(); m_Tick.stop();
     setInputEnabled(false);
 #ifdef Q_OS_LINUX
@@ -556,6 +774,7 @@ void QtSessionRuntime::finishWorker()
     m_Factory.reset();
     m_Presenter.reset();
     m_Windows.clear();
+    m_Session->m_QtPreparePresentation = {};
     if (m_OwnsSession) {
         m_Session->m_RendererFactory = nullptr;
         Session::s_ActiveSession = nullptr;
@@ -574,18 +793,23 @@ void QtSessionRuntime::finishWorker()
 
 void QtSessionRuntime::setStreaming(QSize size)
 {
-    if (m_Stop.load()) return;
+    if (!m_Session->m_Lifecycle.streaming() || m_Closing) return;
     m_StreamSize = size;
     if (!m_DisplayNotice.isEmpty() && !m_DisplayNoticeDeadline)
-        m_DisplayNoticeDeadline = SDL_GetTicks() + 12000;
-    m_Input->setStreamSize(size);
+        m_DisplayNoticeDeadline = PlankClock::milliseconds() + 12000;
+    m_Input->setStreamSize(m_Layout.desktopSize.isValid() ? m_Layout.desktopSize : size);
+    m_Input->setVideoSize(size);
 #ifdef Q_OS_MACOS
-    m_Input->setPointerCaptureSupported((m_Session->m_PlankLaunchFeatureFlags & PLANK_POINTER_CAPTURE_FEATURE) != 0);
+    m_Input->setPointerCaptureSupported(!m_Session->isCollaborator() && (m_Session->m_PlankLaunchFeatureFlags & PLANK_POINTER_CAPTURE_FEATURE) != 0);
     for (auto& shell : m_Windows) shell->surface().setImmersiveMouse(m_Input->immersiveMouse(),
-        (m_Session->m_PlankLaunchFeatureFlags & PLANK_POINTER_CAPTURE_FEATURE) != 0);
+        !m_Session->isCollaborator() && (m_Session->m_PlankLaunchFeatureFlags & PLANK_POINTER_CAPTURE_FEATURE) != 0);
 #endif
-    m_Streaming = true;
     m_ReconnectNoticeDeadline = 0;
+    if (!m_BaselineApplied || m_MarkApplied) {
+        m_DisplayChanges.applied(m_LayoutProbe);
+        m_BaselineApplied = true; m_MarkApplied = false;
+    }
+    updateScreensPrompt();
     updateGeometry();
     setStatus(m_Presenter->hasPresentedLiveFrame() ? QString() : tr("Connecting to workstation…"));
     for (auto& shell : m_Windows) {
@@ -604,6 +828,23 @@ void QtSessionRuntime::updateGeometry()
     const bool multi = fullscreen && m_SpanDisplays && m_Windows.size() > 1;
     if (m_Windows.front()->windowState() == Qt::WindowMinimized) {
         for (size_t i = 1; i < m_Windows.size(); ++i) m_Windows[i]->hide();
+        updateFocus();
+        return;
+    }
+    if (m_Layout.planned) {
+        for (size_t index = 0; index < m_Windows.size(); ++index) {
+            auto& shell = *m_Windows[index];
+            if (!m_Views.contains(&shell) || (m_CollapsedDisplay && index)) { shell.hide(); continue; }
+            const auto& view = m_Views[&shell];
+            auto& surface = shell.surface();
+            const QSize drawable(qRound(surface.width() * shell.devicePixelRatio()), qRound(surface.height() * shell.devicePixelRatio()));
+            if (!drawable.isValid()) continue;
+            const auto slice = PlankPresentation::sliceForSource(m_StreamSize, view.sourcePixels, drawable);
+            const QtSessionGeometry geometry{m_StreamSize, slice.sourceRect, slice.destinationRect,
+                drawable, surface.size(), m_Layout.desktopSize, view.desktopPixels};
+            surface.setPresentation(geometry);
+            m_Presenter->setGeometry(&surface, geometry);
+        }
         updateFocus();
         return;
     }
@@ -636,7 +877,13 @@ void QtSessionRuntime::updateGeometry()
         QRect output(QPoint(), drawable);
         if (multi) output = outputRects.value(&shell);
         const auto slice = PlankPresentation::sliceForDrawable(m_StreamSize, multi ? canvas : drawable, output, drawable);
-        const QtSessionGeometry geometry{m_StreamSize, slice.sourceRect, slice.destinationRect, drawable, surface.size()};
+        const QSize desktop = m_Layout.desktopSize.isValid() ? m_Layout.desktopSize : m_StreamSize;
+        const QRectF input(slice.sourceRect.x() * desktop.width() / m_StreamSize.width(),
+            slice.sourceRect.y() * desktop.height() / m_StreamSize.height(),
+            slice.sourceRect.width() * desktop.width() / m_StreamSize.width(),
+            slice.sourceRect.height() * desktop.height() / m_StreamSize.height());
+        const QtSessionGeometry geometry{m_StreamSize, slice.sourceRect, slice.destinationRect,
+            drawable, surface.size(), desktop, input};
         surface.setPresentation(geometry);
         m_Presenter->setGeometry(&surface, geometry);
     }
@@ -645,13 +892,13 @@ void QtSessionRuntime::updateGeometry()
 
 void QtSessionRuntime::setStatus(const QString& text)
 {
-    const auto visible = text.isEmpty() && SDL_GetTicks() < m_DisplayNoticeDeadline ? m_DisplayNotice : text;
+    const auto visible = text.isEmpty() && PlankClock::milliseconds() < m_DisplayNoticeDeadline ? m_DisplayNotice : text;
     for (auto& shell : m_Windows) shell->surface().setStatusText(visible);
 }
 
 void QtSessionRuntime::beginRecovery()
 {
-    m_ReconnectNoticeDeadline = SDL_GetTicks() + quint64(m_Session->m_Preferences->plankUnreachableTimeoutSeconds) * 1000;
+    m_ReconnectNoticeDeadline = PlankClock::milliseconds() + quint64(m_Session->m_Preferences->plankUnreachableTimeoutSeconds) * 1000;
     if (m_Session->m_Preferences->plankUnreachableAction == StreamingPreferences::PLANK_UNREACHABLE_DISCONNECT)
         m_Session->m_ReconnectPolicy.allowUntil(m_ReconnectNoticeDeadline);
     else
@@ -664,6 +911,7 @@ void QtSessionRuntime::beginRecovery()
 
 void QtSessionRuntime::setInputEnabled(bool enabled)
 {
+    enabled = enabled && m_Session->m_CollaborationPermission.load() != PlankCollaboration::View;
     for (auto& shell : m_Windows) shell->surface().setRemoteInputEnabled(enabled);
     m_Input->setEnabled(enabled);
     updateFocus();
@@ -679,13 +927,14 @@ void QtSessionRuntime::updateFocus()
     for (const auto& shell : m_Windows)
         active |= !shell->surface().displayMenuOpen() &&
                   (focused == shell.get() || focused == &shell->surface());
-    m_Input->setFocused(active && !m_Stop.load());
+    m_Input->setFocused(active && !m_Session->m_Lifecycle.stopping());
 #ifdef Q_OS_MACOS
-    m_Session->m_QtClipboardFocused.store(active && m_Streaming && !m_Stop.load());
+    m_Session->m_QtClipboardFocused.store(active && m_Session->m_Lifecycle.streaming() && !m_Session->m_Lifecycle.stopping());
 #endif
     const auto policy = m_CapturePolicy;
     const bool fullscreen = !m_Windows.empty() && m_Windows.front()->windowState() == Qt::WindowFullScreen;
-    const bool captureAllowed = m_Streaming && m_InputGrabbed && !m_Stop.load() &&
+    const bool captureAllowed = m_Session->m_Lifecycle.streaming() && m_InputGrabbed && !m_Session->m_Lifecycle.stopping() &&
+        m_Session->m_CollaborationPermission.load() != PlankCollaboration::View &&
         (policy == StreamingPreferences::CSK_ALWAYS || (policy == StreamingPreferences::CSK_FULLSCREEN && fullscreen));
 #ifdef Q_OS_MACOS
     // Keep policy separate from cached Qt focus. The native tap and Quit
@@ -700,7 +949,7 @@ void QtSessionRuntime::updateFocus()
     for (auto& shell : m_Windows)
         if (focused == shell.get() || focused == &shell->surface()) focusedShell = shell.get();
     m_WindowGuard->setWindows(focusedShell, focusedShell ? &focusedShell->surface() : nullptr);
-    m_WindowGuard->setPolicy(grab, active && m_Streaming && m_InputGrabbed && m_ConfinePointer &&
+    m_WindowGuard->setPolicy(grab, active && m_Session->m_Lifecycle.streaming() && m_InputGrabbed && m_ConfinePointer &&
         fullscreen && QGuiApplication::screens().size() == 1);
     // The Wayland shortcut inhibitor is attached separately to Qt's surface.
     // XCB implements this public Qt API directly.
@@ -723,14 +972,30 @@ void QtSessionRuntime::showPresentationWindows()
     QScopedValueRollback<bool> changing(m_ChangingPresentation, true);
     for (size_t i = 0; i < m_Windows.size(); ++i) {
         m_Windows[i]->surface().cancelInput();
-        if (!i || (m_Fullscreen && m_SpanDisplays)) m_Windows[i]->showSession(m_Fullscreen);
+        const bool selected = !m_Layout.planned || m_Views.contains(m_Windows[i].get());
+        const bool show = selected && (!i || (m_Layout.planned ? !m_CollapsedDisplay :
+            (m_Fullscreen && m_SpanDisplays && !m_CollapsedDisplay)));
+        if (show) m_Windows[i]->showSession(m_Fullscreen);
         else m_Windows[i]->hide();
     }
 }
 
 void QtSessionRuntime::selectFullscreenDisplays(bool span, QtPlatformSessionShell* source)
 {
-    if (m_Stop.load() || m_Windows.empty() || !source || !source->screen()) return;
+    if (m_Session->m_Lifecycle.stopping() || m_Windows.empty() || !source || !source->screen()) return;
+    if (m_Layout.planned) {
+        m_CollapsedDisplay = !span;
+        if (!span) {
+            const auto selected = std::find_if(m_Windows.begin(), m_Windows.end(), [source](const auto& shell) { return shell.get() == source; });
+            if (selected != m_Windows.end()) std::rotate(m_Windows.begin(), selected, std::next(selected));
+            m_Presenter->setPrimaryOutput(&m_Windows.front()->surface());
+        }
+        m_Fullscreen = true;
+        for (auto& shell : m_Windows)
+            shell->surface().setDisplayMode(m_Layout.outputs.size() > 1, span);
+        showPresentationWindows(); updateGeometry(); updateFocus();
+        return;
+    }
     const bool canSpan = m_Windows.size() == 2 && ClientDisplays::canSpan(ClientDisplays::snapshot());
     if (span && !canSpan) return;
     // Presentation-only override. Keep the authentication/Host-layout snapshot
@@ -773,8 +1038,11 @@ void QtSessionRuntime::handleShortcut(int key)
     case Qt::Key_Q:
         m_Session->m_Diagnostics.end(SessionDiagnostics::End::Hotkey);
         stop(); break;
-    case Qt::Key_Z: m_InputGrabbed = !m_InputGrabbed; setInputEnabled(m_Streaming && m_InputGrabbed); break;
+    case Qt::Key_Z: m_InputGrabbed = !m_InputGrabbed; setInputEnabled(m_Session->m_Lifecycle.streaming() && m_InputGrabbed); break;
     case Qt::Key_X: surface.toggleFullscreen(); break;
+    case Qt::Key_T:
+        for (auto& shell : m_Windows) if (shell->ownsKeyboard()) { shell->surface().toggleToolbar(); return; }
+        surface.toggleToolbar(); break;
     case Qt::Key_S:
     {
         const bool show = !surface.statisticsVisible();
@@ -796,13 +1064,13 @@ void QtSessionRuntime::handleShortcut(int key)
 void QtSessionRuntime::toggleImmersiveMouse(QtPlatformSessionShell* source)
 {
 #ifdef Q_OS_MACOS
-    if (!m_Streaming || m_Stop.load()) return;
+    if (!m_Session->m_Lifecycle.streaming() || m_Session->m_Lifecycle.stopping()) return;
     if (!source) {
         for (auto& shell : m_Windows) if (shell->ownsKeyboard()) { source = shell.get(); break; }
     }
     if (!source || !source->surface().immersiveMouseAvailable()) return;
     if (!m_Input->immersiveMouse()) m_PointerCandidateWindow = source;
-    QPointF anchor = source->surface().presentation().sourcePixels.center();
+    QPointF anchor = source->surface().presentation().inputPixels().center();
     const auto& geometry = source->surface().presentation();
     QPointF local = source->mapFromGlobal(QCursor::pos());
     geometry.toStream(local, anchor); // Toolbar activation keeps a bounded fallback.
@@ -814,35 +1082,33 @@ void QtSessionRuntime::toggleImmersiveMouse(QtPlatformSessionShell* source)
 
 void QtSessionRuntime::tick()
 {
-    if (m_Stop.load()) return;
+    if (m_Session->m_Lifecycle.stopping()) return;
+    if (m_Session->m_GuiDisplaySnapshot.requested())
+        m_Session->m_GuiDisplaySnapshot.publish(ClientDisplayProbe::probe());
 #ifdef Q_OS_MACOS
-    if (m_Session->m_ClipboardSync) {
-        m_Session->m_ClipboardSync->applyPendingHostTextOnMainThread();
-        m_Session->m_ClipboardSync->pollLocalClipboardOnMainThread();
-    }
+    m_Session->pollClipboardOnMainThread();
 #endif
     if (m_Session->m_ReconnectGreeterConfirmed.exchange(false)) setStatus(tr("Returning to the sign-in screen…"));
-    if (m_ReconnectNoticeDeadline && SDL_GetTicks() >= m_ReconnectNoticeDeadline) {
+    if (m_ReconnectNoticeDeadline && PlankClock::milliseconds() >= m_ReconnectNoticeDeadline) {
         m_ReconnectNoticeDeadline = 0;
         if (m_Session->m_Preferences->plankUnreachableAction == StreamingPreferences::PLANK_UNREACHABLE_DISCONNECT) {
             m_Session->m_Diagnostics.end(SessionDiagnostics::End::ReconnectTimeout);
             stop();
             return;
         } else {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "PLANK Qt waiting for workstation; automatic recovery remains active");
+            qInfo("PLANK Qt waiting for workstation; automatic recovery remains active");
             setInputEnabled(false);
             for (auto& shell : m_Windows) shell->surface().setWaiting(true);
         }
     }
-    if (m_Streaming) {
+    if (m_Session->m_Lifecycle.streaming()) {
         // A healthy Host may send no new frames while its desktop is idle.
         // Only transport failure or a confirmed worker replacement enters
-        // recovery; request(Reconnect) then clears m_Streaming so its status
+        // recovery; the lifecycle then leaves Streaming so its status
         // and timeout notice remain owned by that recovery path.
         setStatus(m_Presenter->hasPresentedLiveFrame() ? QString() : tr("Connecting to workstation…"));
     }
-    const auto now = SDL_GetTicks();
+    const auto now = PlankClock::milliseconds();
     const auto requested = m_Session->m_ConfirmedBitrateRequestKbps.load();
     const auto applied = m_Session->m_ConfirmedBitrateAppliedKbps.load();
     if (requested == m_TargetBitrate && applied > 0 && applied != m_TargetBitrate) {
@@ -851,7 +1117,7 @@ void QtSessionRuntime::tick()
     }
     const auto flags = LI_FF_DYNAMIC_VIDEO_BITRATE | LI_FF_ENCODER_TARGET_ACK;
     const bool rateSupported = (LiGetHostFeatureFlags() & flags) == flags;
-    if (m_Streaming && rateSupported && m_TargetBitrate != applied && now >= m_BitrateChanged + 250 &&
+    if (m_Session->m_Lifecycle.streaming() && rateSupported && m_TargetBitrate != applied && now >= m_BitrateChanged + 250 &&
         now >= m_BitrateSent + (m_LastSentBitrate == m_TargetBitrate ? 1000 : 250)) {
         if (LiSetVideoBitrate(m_TargetBitrate) == 0) { m_LastSentBitrate = m_TargetBitrate; m_BitrateSent = now; }
     }
@@ -859,7 +1125,7 @@ void QtSessionRuntime::tick()
         {QStringLiteral("videoMbps"), m_Session->m_CurrentVideoMbps.load()},
         {QStringLiteral("loss"), m_Session->currentVideoFecLoss().before},
         {QStringLiteral("rtt"), m_Session->currentNetworkRttMs()},
-        {QStringLiteral("bitrateEnabled"), rateSupported && m_Streaming},
+        {QStringLiteral("bitrateEnabled"), rateSupported && m_Session->m_Lifecycle.streaming()},
         {QStringLiteral("bitrateConfirmed"), requested == m_TargetBitrate && applied == m_TargetBitrate},
         {QStringLiteral("peakKbps"), m_Session->m_ConfirmedBitratePeakKbps.load()}};
     {
@@ -876,5 +1142,17 @@ void QtSessionRuntime::tick()
             telemetry.insert(QStringLiteral("cameraState"), int(m_Session->m_Camera ? m_Session->m_Camera->state() : PlankCamera::State::Off));
         }
     }
+    const bool guest = m_Session->isCollaborator();
+    telemetry.insert(QStringLiteral("collaborationText"), guest ?
+        tr("Sharing with %1 · %2").arg(m_Session->m_CollaborationOwner,
+            m_Session->m_CollaborationPermission.load() == PlankCollaboration::View ?
+            tr("View only") : tr("Keyboard and mouse control")) : QString());
+#ifdef Q_OS_MACOS
+    const auto files = m_Session->fileClipboard();
+    telemetry.insert(QStringLiteral("fileTransferEnabled"), files && m_Session->clipboardSyncEnabled() &&
+        (m_Session->m_FileClipboardMode == QStringLiteral("client-to-host") ||
+         m_Session->m_FileClipboardMode == QStringLiteral("bidirectional")));
+    telemetry.insert(QStringLiteral("fileTransferStatus"), files ? QString::fromStdString(files->status()) : QString());
+#endif
     for (auto& shell : m_Windows) shell->surface().setTelemetry(telemetry);
 }

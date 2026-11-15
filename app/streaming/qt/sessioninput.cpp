@@ -4,7 +4,6 @@
 #include "../input/macrawwacom.h"
 #include "../mackeyboardcapture.h"
 #include "../macquitshortcut.h"
-#include "../input/sdl-darwin-scancodes.h"
 #else
 #include "../input/linuxwacom.h"
 #include "../input/linuxrawwacom.h"
@@ -31,23 +30,21 @@ QtSessionInput::QtSessionInput(QObject* parent) : QObject(parent)
         return m_Enabled && m_SystemKeys && (m_NativeFocus ? m_NativeFocus() : m_Focused);
     };
     m_MacKeys = std::make_unique<MacKeyboardCapture>(ownsKeyboard, [this] { releaseAll(); });
+    m_MacKeys->setLocalHotkeyHandler([this, ownsKeyboard](const MacKeyEvent& event) {
+        const int shortcut = qtSessionShortcut(event.code, int(qtRemoteKey(event.code).vk), event.modifiers);
+        if (shortcut != Qt::Key_Q && shortcut != Qt::Key_T) return false;
+        if (!event.down || event.repeat) return true;
+        return QMetaObject::invokeMethod(this, [this, ownsKeyboard, shortcut] {
+            if (ownsKeyboard() && m_MacKeys->capturesKeys()) emit shortcutRequested(shortcut);
+        }, Qt::QueuedConnection);
+    });
     // Preserve ordinary menu/Dock Quit, but never let a remotely forwarded
     // Command-Q also activate the local application's Quit shortcut.
     m_MacQuit = std::make_unique<MacQuitShortcut>(ownsKeyboard);
     m_MacKeys->setQueueWake([this] {
         return QMetaObject::invokeMethod(this, [this] {
-            m_MacKeys->dispatchPending([this](SDL_KeyboardEvent* event) {
-                Qt::KeyboardModifiers mods;
-                if (event->mod & SDL_KMOD_CTRL) mods |= Qt::ControlModifier;
-                if (event->mod & SDL_KMOD_SHIFT) mods |= Qt::ShiftModifier;
-                if (event->mod & SDL_KMOD_ALT) mods |= Qt::AltModifier;
-                if (event->mod & SDL_KMOD_GUI) mods |= Qt::MetaModifier;
-                for (quint32 code = 0; code < SDL_arraysize(darwin_scancode_table); ++code) {
-                    if (event->scancode != SDL_SCANCODE_UNKNOWN && darwin_scancode_table[code] == event->scancode) {
-                        key(code, int(qtRemoteKey(code).vk), event->down, event->repeat, mods);
-                        break;
-                    }
-                }
+            m_MacKeys->dispatchPending([this](const MacKeyEvent& event) {
+                key(event.code, int(qtRemoteKey(event.code).vk), event.down, false, event.modifiers);
             });
         }, Qt::QueuedConnection);
     });
@@ -80,13 +77,14 @@ void QtSessionInput::tabletMain(unsigned hostFeatures)
     m_NormalizedPen.store(!raw && (hostFeatures & LI_FF_PEN_TOUCH_EVENTS));
 #else
     std::unique_ptr<LinuxWacomInput> normalized;
+    if (m_PenObserver) m_PenObserver({});
     if (!qEnvironmentVariableIntValue("PLANK_EXTERNAL_WACOM_BRIDGE")) {
         const auto decision = plankWacomTransportForConnectedDevice();
         const auto rawFlags = LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND;
         if ((hostFeatures & rawFlags) == rawFlags && decision.transport == PlankWacomTransport::ExactRawHid)
-            raw = std::make_unique<LinuxRawWacomInput>(activity);
+            raw = std::make_unique<LinuxRawWacomInput>(activity, m_PenObserver);
         else if (hostFeatures & LI_FF_PEN_TOUCH_EVENTS)
-            normalized = std::make_unique<LinuxWacomInput>(activity);
+            normalized = std::make_unique<LinuxWacomInput>(activity, m_PenObserver);
     }
 #endif
     m_RawControl.publish(raw.get());
@@ -173,7 +171,8 @@ void QtSessionInput::handleCursorShape(const unsigned char* data, unsigned int l
 }
 void QtSessionInput::handleCursorPosition(const unsigned char* data, unsigned int length)
 {
-    const auto size = m_StreamSize.load();
+    const auto video = m_VideoSize.load();
+    const auto size = video ? video : m_StreamSize.load();
     if (m_Cursor.position(data, length, QSize(int(size >> 32), int(size & 0xffffffffu))))
         QMetaObject::invokeMethod(this, &QtSessionInput::consumePosition, Qt::QueuedConnection);
 }
@@ -510,6 +509,13 @@ void QtSessionInput::key(quint32 scan, int key, bool down, bool repeat, Qt::Keyb
         deferPointer(event); return;
     }
     auto mapped = qtRemoteKey(scan);
+    if (down && m_Enabled && mapped.vk == 0x56 && (modifiers & Qt::ControlModifier) &&
+        !(modifiers & (Qt::AltModifier | Qt::MetaModifier | Qt::ShiftModifier)) &&
+        m_PasteHandler && m_PasteHandler()) {
+        releaseAll();
+        m_ShortcutKeys.insert(scan);
+        return;
+    }
     if (down) {
         if (!m_Enabled || !mapped.vk || ((mapped.vk == 0x5b || mapped.vk == 0x5c) && !m_SystemKeys)) return;
         m_Keys.insert(scan, mapped);
@@ -546,7 +552,7 @@ void QtSessionInput::releaseAll()
 }
 
 #ifdef Q_OS_MACOS
-bool QtSessionInput::capturesNativeKeys() const { return m_MacKeys->suppressSdlKeyEvent(); }
+bool QtSessionInput::capturesNativeKeys() const { return m_MacKeys->capturesKeys(); }
 
 void QtSessionInput::penLeave()
 {
@@ -580,6 +586,7 @@ void QtSessionInput::pasteText()
 {
     if (!m_Enabled) return;
     releaseAll();
+    if (m_PasteHandler && m_PasteHandler()) return;
     auto text = QGuiApplication::clipboard()->text().replace(QStringLiteral("\r\n"), QStringLiteral("\n")).toUtf8();
     if (text.size() <= 512 * 1024) LiSendUtf8TextEvent(text.constData(), unsigned(text.size()));
 }

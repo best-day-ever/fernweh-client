@@ -230,7 +230,7 @@ int Pacer::renderThread(void* context)
         // Wait for the renderer to be ready for the next frame
         const uint64_t waitStarted = ClientFrameFlowTrace::nowNs();
         PlankVideoPipeline::record(PlankVideoPipeline::renderOperation,
-                                  PlankVideoPipeline::Stage::WaitRenderer, SDL_GetTicks());
+                                  PlankVideoPipeline::Stage::WaitRenderer);
         me->m_VsyncRenderer->waitToRender();
         me->m_FrameFlowTrace.record(ClientFrameFlowTrace::GpuWait, -1, -1, -1, 0, -1,
                                    ClientFrameFlowTrace::nowNs() - waitStarted);
@@ -238,7 +238,7 @@ int Pacer::renderThread(void* context)
         // Acquire the frame queue lock to protect the queue and
         // the not empty condition
         PlankVideoPipeline::record(PlankVideoPipeline::renderOperation,
-                                  PlankVideoPipeline::Stage::WaitRenderQueue, SDL_GetTicks());
+                                  PlankVideoPipeline::Stage::WaitRenderQueue);
         me->m_FrameQueueLock.lock();
 
         // Wait for a frame to be ready to render
@@ -443,11 +443,11 @@ void Pacer::renderFrame(AVFrame* frame)
     const uint64_t renderStarted = ClientFrameFlowTrace::nowNs();
     m_FrameFlowTrace.record(ClientFrameFlowTrace::RenderBegin, tracePresentationTimeUs);
     PlankVideoPipeline::record(PlankVideoPipeline::renderOperation,
-                              PlankVideoPipeline::Stage::RenderFrame, SDL_GetTicks());
+                              PlankVideoPipeline::Stage::RenderFrame);
     m_VsyncRenderer->renderFrame(frame);
     const bool renderAccepted = m_VsyncRenderer->lastRenderAccepted();
     PlankVideoPipeline::record(PlankVideoPipeline::renderOperation,
-                              PlankVideoPipeline::Stage::RenderReturned, SDL_GetTicks());
+                              PlankVideoPipeline::Stage::RenderReturned);
     PlankVideoPipeline::rendererReturns.fetch_add(1, std::memory_order_relaxed);
     m_FrameFlowTrace.record(ClientFrameFlowTrace::RenderEnd, tracePresentationTimeUs,
                            -1, -1, 0, -1, ClientFrameFlowTrace::nowNs() - renderStarted);

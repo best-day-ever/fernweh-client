@@ -1,8 +1,6 @@
 #include <QtTest>
 
 #include "streaming/plankpresentation.h"
-#include "streaming/input/plankmousemotion.h"
-#include "streaming/input/plankpointerlogic.h"
 
 class TestPlankPresentation : public QObject
 {

@@ -1,0 +1,10 @@
+QT += core testlib
+QT -= gui
+CONFIG += console testcase c++17
+CONFIG -= app_bundle
+TEMPLATE = app
+TARGET = mediafeatures
+SOURCES += test_mediafeatures.cpp
+INCLUDEPATH += ../../app
+isEmpty(PLANK_COMMON_SOURCE): PLANK_COMMON_SOURCE = $$PWD/../../moonlight-common-c/moonlight-common-c
+INCLUDEPATH += $$PLANK_COMMON_SOURCE/src

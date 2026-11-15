@@ -1,18 +1,16 @@
+#include <SDL3/SDL.h>
+#include "../plankpresentation.h"
 #pragma once
 
 #include <cstdint>
 
 #include <QSize>
 #include <Limelight.h>
-#include <SDL3/SDL.h>
-
-#include "../plankpresentation.h"
 
 class IFFmpegRendererFactory;
 
-#define SDL_CODE_FRAME_READY 0
-
 #define MAX_SLICES 4
+#define SDL_CODE_FRAME_READY 0
 
 enum class DecoderSelectionMode
 {
@@ -63,8 +61,9 @@ typedef struct _VIDEO_STATS {
 } VIDEO_STATS, *PVIDEO_STATS;
 
 typedef struct _DECODER_PARAMETERS {
-    SDL_Window* window;
-    DecoderSelectionMode selectionMode;
+    SDL_Window* window = nullptr;
+    const PlankPresentationLayout* presentationLayout = nullptr;
+    DecoderSelectionMode selectionMode = DecoderSelectionMode::PreferExactHardwareThenSoftware;
     DecoderCaptureSource captureSource;
     DecoderEncoderBackend encoderBackend;
 
@@ -73,13 +72,12 @@ typedef struct _DECODER_PARAMETERS {
     int height;
     int frameRate;
     bool enableVsync;
-    bool enableFramePacing;
+    bool enableFramePacing = false;
     bool enableIdentityGbr;
     bool testOnly;
-    const PlankPresentationLayout* presentationLayout;
-    // Optional UI-owned presenter. Null preserves the established SDL policy.
+    // Required for Qt; null selects the established SDL renderer policy.
     // The factory outlives decoder startup, reconnect and destruction.
-    IFFmpegRendererFactory* rendererFactory;
+    IFFmpegRendererFactory* rendererFactory = nullptr;
 } DECODER_PARAMETERS, *PDECODER_PARAMETERS;
 
 #define WINDOW_STATE_CHANGE_SIZE 0x01
@@ -100,18 +98,19 @@ typedef struct _WINDOW_STATE_CHANGE_INFO {
 class IVideoDecoder {
 public:
     virtual ~IVideoDecoder() {}
+    virtual void renderFrameOnMainThread() {}
+    virtual void setHdrMode(bool) {}
+    virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) { return false; }
+
     virtual bool initialize(PDECODER_PARAMETERS params) = 0;
     virtual bool isHardwareAccelerated() = 0;
-    virtual bool isAlwaysFullScreen() = 0;
-    virtual bool isHdrSupported() = 0;
+    virtual bool isAlwaysFullScreen() { return false; }
+    virtual bool isHdrSupported() { return false; }
+    virtual QSize getDecoderMaxResolution() { return {}; }
     virtual int getDecoderCapabilities() = 0;
     virtual int getDecoderColorspace() = 0;
     virtual int getDecoderColorRange() = 0;
-    virtual QSize getDecoderMaxResolution() = 0;
     virtual int submitDecodeUnit(PDECODE_UNIT du) = 0;
-    virtual void renderFrameOnMainThread() = 0;
-    virtual void setHdrMode(bool enabled) = 0;
-    virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO info) = 0;
 
     // See IFFmpegRenderer::letterboxesAgainstLiveDrawable().
     virtual bool letterboxesAgainstLiveDrawable() { return false; }

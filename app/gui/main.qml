@@ -321,6 +321,10 @@ ApplicationWindow {
                 color: theme.textSecondary
                 font.pointSize: 9
                 font.weight: Font.Medium
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.maximumWidth: implicitWidth
+                elide: Text.ElideRight
                 horizontalAlignment: Qt.AlignLeft
                 verticalAlignment: Qt.AlignVCenter
             }
@@ -505,6 +509,8 @@ ApplicationWindow {
     NavigableDialog {
         id: addPcDialog
         title: qsTr("Add workstation bookmark")
+        modal: true
+        closePolicy: Popup.CloseOnEscape
         property var virtualModeChoices: ComputerManager.plankVirtualModeChoices()
 
         // Give both connection fields enough room for real hostnames while
@@ -512,8 +518,6 @@ ApplicationWindow {
         // stray click beside it cannot throw away what was typed.
         width: Math.min(640, parent.width - 40)
         height: Math.min(implicitHeight, parent.height - 20)
-        modal: true
-        closePolicy: Popup.CloseOnEscape
 
         function suggestedNickname(address) {
             var value = address.trim()
@@ -570,7 +574,7 @@ ApplicationWindow {
             addressText.clear()
             nicknameText.clear()
             nicknameText.manuallyEdited = false
-            addHostLayout.currentIndex = 0
+            addHostLayout.selectLayout(0)
             addVirtualMode1.currentIndex = 9
             addVirtualMode2.currentIndex = 1
             addScalingChoice.currentIndex = 0
@@ -581,7 +585,7 @@ ApplicationWindow {
             if (addressText.text && nicknameText.text) {
                 ComputerManager.addNewHostManually(addressText.text.trim(),
                                                    nicknameText.text.trim(),
-                                                   addHostLayout.currentIndex,
+                                                   addHostLayout.layoutChoice,
                                                    addVirtualMode1.currentIndex,
                                                    addVirtualMode2.currentIndex,
                                                    addScalingChoice.currentIndex,
@@ -647,7 +651,7 @@ ApplicationWindow {
                 hostAddress: addressText.text
                 probingEnabled: addPcDialog.visible
                 nvfbcDefaultProfile: StreamingPreferences.PLANK_PROFILE_NVENC_HEVC_10BIT_444
-                onCaptureSourceEdited: addHostLayout.currentIndex = 0
+                onCaptureSourceEdited: addHostLayout.selectLayout(0)
                 onProfileActivated: addPcDialog.ensureVirtualModesCompatible()
             }
 
@@ -657,20 +661,16 @@ ApplicationWindow {
                 font.bold: true
             }
 
-            PlankComboBox {
+            PlankHostLayoutBox {
                 id: addHostLayout
                 Layout.fillWidth: true
-                model: addVideoSettings.captureSource === 2 ? [qsTr("Match client display(s)"), qsTr("One Mac virtual display")] : [
-                    qsTr("Match client displays"),
-                    qsTr("Match Host"),
-                    qsTr("One virtual display"),
-                    qsTr("Two virtual displays (horizontal)")
-                ]
+                captureSource: addVideoSettings.captureSource
+                hostDisplayPolicy: addVideoSettings.hostDisplayPolicy
             }
 
             Label {
                 Layout.fillWidth: true
-                visible: addVideoSettings.captureSource !== 2 && addHostLayout.currentIndex === 0
+                visible: addVideoSettings.captureSource !== 2 && addHostLayout.layoutChoice === 0
                 text: visible ? ComputerManager.plankMatchClientSummary() : ""
                 wrapMode: Text.Wrap
                 opacity: 0.72
@@ -679,13 +679,13 @@ ApplicationWindow {
             Label {
                 text: addVideoSettings.captureSource === 2 ? qsTr("Mac desktop resolution") : qsTr("Virtual display 1 resolution")
                 font.bold: true
-                opacity: (addVideoSettings.captureSource === 2 ? addHostLayout.currentIndex === 1 : addHostLayout.currentIndex >= 2) ? 1.0 : 0.5
+                opacity: (addVideoSettings.captureSource === 2 ? addHostLayout.layoutChoice === 1 : addHostLayout.layoutChoice >= 2) ? 1.0 : 0.5
             }
 
             PlankComboBox {
                 id: addVirtualMode1
                 Layout.fillWidth: true
-                enabled: (addVideoSettings.captureSource === 2 ? addHostLayout.currentIndex === 1 : addHostLayout.currentIndex >= 2)
+                enabled: (addVideoSettings.captureSource === 2 ? addHostLayout.layoutChoice === 1 : addHostLayout.layoutChoice >= 2)
                 currentIndex: 9
                 model: addPcDialog.virtualModeChoices
                 delegate: ItemDelegate {
@@ -700,14 +700,14 @@ ApplicationWindow {
                 visible: addVideoSettings.captureSource !== 2
                 text: qsTr("Virtual display 2 resolution")
                 font.bold: true
-                opacity: addHostLayout.currentIndex === 3 ? 1.0 : 0.5
+                opacity: addHostLayout.layoutChoice === 3 ? 1.0 : 0.5
             }
 
             PlankComboBox {
                 id: addVirtualMode2
                 visible: addVideoSettings.captureSource !== 2
                 Layout.fillWidth: true
-                enabled: addHostLayout.currentIndex === 3
+                enabled: addHostLayout.layoutChoice === 3
                 currentIndex: 1
                 model: addPcDialog.virtualModeChoices
                 delegate: ItemDelegate {

@@ -259,6 +259,8 @@ linux:packagesExist(libinput):packagesExist(libudev) {
 }
 
 win32 {
+    SOURCES += streaming/audio/sdlmicrophone.cpp
+    HEADERS += streaming/audio/sdlmicrophone.h
     LIBS += -llibssl -llibcrypto -lSDL3 -lSDL3_ttf -lavcodec -lavutil -lswscale -lopus -ldxgi -ld3d11 -llibplacebo
     CONFIG += ffmpeg libplacebo
 }
@@ -405,6 +407,18 @@ HEADERS += \
     backend/systemproperties.h
 HEADERS += backend/clientdisplays.h
 
+# Native macOS playback/clock and display queries from current PLANK. The
+# Windows product retains its SDL platform adapter.
+macx {
+    SOURCES -= streaming/audio/renderers/sdlaud.cpp
+    HEADERS -= streaming/audio/renderers/sdl.h
+    OBJECTIVE_SOURCES += streaming/audio/macmicrophone.mm streaming/audio/renderers/coreaudio.mm streaming/audio/coreaudiodevice.mm streaming/macdisplays.mm
+    HEADERS += streaming/audio/renderers/coreaudio.h streaming/audio/coreaudiodevice.h streaming/audio/coreaudioplaybackstate.h streaming/macdisplays.h
+    PKGCONFIG += libswresample
+    LIBS += -framework AudioToolbox -framework CoreAudio
+}
+HEADERS += plankprofiles.h streaming/sessionlifecycle.h streaming/video/decodepacket.h streaming/video/decoderpolicy.h streaming/input/penmetrics.h streaming/input/linuxpenmetrics.h
+
 linux:contains(CONFIG, plank-qt-session) {
     SOURCES -= streaming/audio/renderers/sdlaud.cpp
     HEADERS -= streaming/audio/renderers/sdl.h
@@ -448,11 +462,17 @@ ffmpeg {
 
     DEFINES += HAVE_FFMPEG
     SOURCES += \
-        streaming/video/ffmpeg.cpp \
         streaming/video/ffmpeg-renderers/genhwaccel.cpp \
         streaming/video/ffmpeg-renderers/sdlvid.cpp \
         streaming/video/ffmpeg-renderers/swframemapper.cpp \
         streaming/video/ffmpeg-renderers/pacer/pacer.cpp
+
+    contains(CONFIG, plank-qt-session) {
+        SOURCES += streaming/video/ffmpeg.cpp
+    } else {
+        SOURCES += streaming/video/ffmpegsdl.cpp
+        HEADERS += streaming/video/ffmpegsdl.h
+    }
 
     HEADERS += \
         streaming/video/ffmpeg.h \
@@ -740,13 +760,6 @@ else:unix: LIBS += -L$$OUT_PWD/../qmdnsengine/ -lqmdnsengine
 
 INCLUDEPATH += $$PWD/../qmdnsengine/qmdnsengine/src/include $$PWD/../qmdnsengine
 DEPENDPATH += $$PWD/../qmdnsengine/qmdnsengine/src/include $$PWD/../qmdnsengine
-
-win32:CONFIG(release, debug|release): LIBS += -L$$OUT_PWD/../h264bitstream/release/ -lh264bitstream
-else:win32:CONFIG(debug, debug|release): LIBS += -L$$OUT_PWD/../h264bitstream/debug/ -lh264bitstream
-else:unix: LIBS += -L$$OUT_PWD/../h264bitstream/ -lh264bitstream
-
-INCLUDEPATH += $$PWD/../h264bitstream
-DEPENDPATH += $$PWD/../h264bitstream
 
 !winrt {
     win32:CONFIG(release, debug|release): LIBS += -L$$OUT_PWD/../AntiHooking/release/ -lAntiHooking

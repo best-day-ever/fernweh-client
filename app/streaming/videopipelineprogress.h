@@ -1,5 +1,7 @@
 #pragma once
 
+#include "monotonicclock.h"
+
 #include <atomic>
 #include <cstdint>
 
@@ -15,7 +17,7 @@ enum class Stage : std::uint8_t {
 inline std::atomic<std::uint64_t> decodeOperation {0}, renderOperation {0};
 inline std::atomic<std::uint64_t> decodedFrames {0}, rendererReturns {0};
 
-inline void record(std::atomic<std::uint64_t>& lane, Stage stage, std::uint64_t nowMs)
+inline void record(std::atomic<std::uint64_t>& lane, Stage stage, std::uint64_t nowMs = PlankClock::milliseconds())
 {
     // One atomic publishes the operation and its entry time together.
     lane.store((nowMs << 8) | static_cast<std::uint8_t>(stage), std::memory_order_relaxed);

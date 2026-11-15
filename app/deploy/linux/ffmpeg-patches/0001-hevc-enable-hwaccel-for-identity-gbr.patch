@@ -1,28 +1,21 @@
 From: PLANK Engineering <engineering@instinctual.la>
-Subject: [PATCH] avcodec/hevc: enable hardware formats for identity GBR
+Subject: [PATCH] avcodec/hevc: offer hardware formats for identity GBR
 
-HEVC matrix_coeffs=0 changes the software pixel format for 8-bit and 10-bit
-4:4:4 streams from YUV444P/YUV444P10 to GBRP/GBRP10. The coded surface layouts
-and hardware profiles remain Main 4:4:4/Main 4:4:4 10, so offer the same
-hardware accelerators.
+HEVC identity-matrix streams use GBRP/GBRP10 software formats but retain the
+Main 4:4:4 hardware profile and coded layout. Add the aliases to get_format(),
+not map_to_alpha_format(): only get_format() offers hardware accelerators.
 
----
- libavcodec/hevc/hevcdec.c | 2 ++
- 1 file changed, 2 insertions(+)
-
-diff --git a/libavcodec/hevc/hevcdec.c b/libavcodec/hevc/hevcdec.c
-index 8a845f5..349e0f3 100644
 --- a/libavcodec/hevc/hevcdec.c
 +++ b/libavcodec/hevc/hevcdec.c
-@@ -669,6 +669,7 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
+@@ -633,6 +633,7 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
          *fmt++ = AV_PIX_FMT_CUDA;
  #endif
          break;
 +    case AV_PIX_FMT_GBRP:
      case AV_PIX_FMT_YUV444P:
- #if CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL
-         *fmt++ = AV_PIX_FMT_VIDEOTOOLBOX;
-@@ -678,6 +679,7 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
+ #if CONFIG_HEVC_VAAPI_HWACCEL
+         *fmt++ = AV_PIX_FMT_VAAPI;
+@@ -665,6 +666,7 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
          *fmt++ = AV_PIX_FMT_CUDA;
  #endif
          break;
@@ -30,5 +23,3 @@ index 8a845f5..349e0f3 100644
      case AV_PIX_FMT_YUV444P10:
  #if CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL
          *fmt++ = AV_PIX_FMT_VIDEOTOOLBOX;
--- 
-2.50.1

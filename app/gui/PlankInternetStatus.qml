@@ -1,12 +1,32 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import QtQuick.Window 2.15
 import InternetConnectivity 1.0
 
 NavigableToolButton {
     id: control
     objectName: "internetStatus"
     required property var monitor
+    readonly property var launcherWindow: control.Window.window
+    readonly property bool checksVisible: !!launcherWindow && launcherWindow.visible &&
+        launcherWindow.visibility !== Window.Minimized &&
+        Qt.application.state !== Qt.ApplicationHidden && Qt.application.state !== Qt.ApplicationSuspended
+
+    // Only the main-window indicator enables Internet probing. Focus in a
+    // streaming window does not make this launcher visible again.
+    Binding {
+        target: control.monitor
+        property: "windowVisible"
+        value: control.checksVisible
+        restoreMode: Binding.RestoreBindingOrValue
+    }
+    Binding {
+        target: control.monitor
+        property: "summaryVisible"
+        value: pingDialog.visible
+        restoreMode: Binding.RestoreBindingOrValue
+    }
     function colorForState(state) {
         return state === InternetConnectivity.Reachable ? theme.success :
                state === InternetConnectivity.NoResponse ? theme.danger :
@@ -40,7 +60,7 @@ NavigableToolButton {
     }
     ToolTip.visible: hovered
     ToolTip.delay: 500
-    ToolTip.text: monitor.detail + "\n" + qsTr("Click to check all configured addresses.")
+    ToolTip.text: monitor.detail + "\n" + qsTr("Click to view live ping results.")
     onClicked: pingDialog.open()
 
     NavigableDialog {
@@ -50,26 +70,17 @@ NavigableToolButton {
         modal: true
         dim: false
         focus: true
+        bottomPadding: 4
         width: Math.max(0, Math.min(600, parent.width - 32))
         height: Math.max(0, Math.min(implicitHeight, parent.height - 32))
         closePolicy: Popup.CloseOnEscape
 
-        onOpened: control.monitor.refreshSummary()
         onClosed: {
-            control.monitor.cancelSummary()
             control.forceActiveFocus()
         }
 
         contentItem: ColumnLayout {
             spacing: theme.spaceMedium
-
-            Label {
-                text: qsTr("One ping to each address configured in client.conf.")
-                textFormat: Text.PlainText
-                color: theme.textSecondary
-                wrapMode: Text.Wrap
-                Layout.fillWidth: true
-            }
 
             RowLayout {
                 Layout.fillWidth: true
@@ -106,6 +117,7 @@ NavigableToolButton {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredHeight: resultsColumn.implicitHeight
+                Layout.maximumHeight: resultsColumn.implicitHeight
                 Layout.minimumHeight: 0
                 clip: true
                 contentWidth: availableWidth
@@ -157,35 +169,22 @@ NavigableToolButton {
             }
 
             Label {
-                objectName: "internetSummaryCheckedAt"
-                text: control.monitor.summaryError ? control.monitor.summaryError :
-                      control.monitor.summaryRunning ? qsTr("Checking all addresses…") :
-                      control.monitor.summaryCheckedAt ? qsTr("Last checked: %1").arg(control.monitor.summaryCheckedAt) : ""
+                objectName: "internetSummaryError"
+                visible: control.monitor.summaryError.length > 0
+                text: control.monitor.summaryError
                 textFormat: Text.PlainText
-                color: control.monitor.summaryError ? theme.warning : theme.textSecondary
+                color: theme.warning
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }
 
-            Label {
-                text: qsTr("No response can mean ping is blocked. It does not necessarily mean Internet access is down.")
-                textFormat: Text.PlainText
-                color: theme.textSecondary
-                wrapMode: Text.Wrap
-                Layout.fillWidth: true
-            }
         }
 
         footer: DialogButtonBox {
             alignment: Qt.AlignRight
+            topPadding: 0
+            bottomPadding: 0
             background: Rectangle { color: theme.surfaceRaised }
-            Button {
-                objectName: "internetSummaryRefresh"
-                text: qsTr("Refresh")
-                enabled: !control.monitor.summaryRunning && !control.monitor.summaryError
-                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
-                onClicked: control.monitor.refreshSummary()
-            }
             Button {
                 objectName: "internetSummaryClose"
                 text: qsTr("Close")

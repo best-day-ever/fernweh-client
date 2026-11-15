@@ -17,7 +17,38 @@ private slots:
     void fitsClosestSupportedModeWithoutUpscale();
     void keepsStreamDimensionsEven();
     void streamsArrangementCanvasOneToOne();
+    void sizesOnlySelectedClientOutputs();
 };
+
+void TestPlankDisplayMode::sizesOnlySelectedClientOutputs()
+{
+    struct Display {
+        int displayId;
+        QSize matchTarget;
+        int planIndex;
+        bool legacySelected;
+    };
+    QVector<Display> displays{{1, {1920,1080}, -1, true}, {2, {1920,1080}, -1, false}};
+    const QSize host(3840,1080);
+    // Current monitor and a saved single monitor keep the Host aspect ratio
+    // inside one selected output, although discovery retains both monitors.
+    QCOMPARE(PlankDisplayMode::resolve(PlankDisplayMode::detectedClientResolution(displays,1,false,false),host),
+             QSize(1920,540));
+    // Selection remains authoritative even if multi-output availability was
+    // retained by an older caller or a previous presentation.
+    QCOMPARE(PlankDisplayMode::resolve(PlankDisplayMode::detectedClientResolution(displays,1,true,false),host),
+             QSize(1920,540));
+    displays[0].legacySelected=false; displays[1].legacySelected=true;
+    QCOMPARE(PlankDisplayMode::resolve(PlankDisplayMode::detectedClientResolution(displays,2,false,false),host),
+             QSize(1920,540));
+    displays[0].legacySelected=true;
+    QCOMPARE(PlankDisplayMode::resolve(PlankDisplayMode::detectedClientResolution(displays,1,true,false),host),host);
+    // A legacy arrangement may include two of three connected monitors.
+    // Profile membership supersedes the bookmark's single-monitor choice.
+    displays={{1,{1920,1080},-1,true}, {2,{1920,1080},0,false}, {3,{2560,1440},1,false}};
+    QCOMPARE(PlankDisplayMode::detectedClientResolution(displays,2,true,true),QSize(4480,1440));
+    QCOMPARE(PlankDisplayMode::detectedClientResolution(displays,3,false,true),QSize(2560,1440));
+}
 
 void TestPlankDisplayMode::usesDetectedClientResolution()
 {

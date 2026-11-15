@@ -1,4 +1,5 @@
 #include <QtTest>
+#include "../../app/streaming/monotonicclock.h"
 #include "desktopstage.h"
 #include "hostrecovery.h"
 #include "../../app/streaming/plankreconnectpolicy.h"
@@ -7,6 +8,19 @@ class TestDesktopStage : public QObject
 {
     Q_OBJECT
 private slots:
+    void diagnosticSampleAgesAreBounded()
+    {
+        // Packet and rendered-statistics samples share the monotonic epoch;
+        // SDL presentation timers may start at an unrelated process offset.
+        QCOMPARE(PlankClock::ageMilliseconds(500, 750), std::uint32_t(250));
+        QCOMPARE(PlankClock::ageMilliseconds(0, 750), std::uint32_t(60000));
+        QCOMPARE(PlankClock::ageMilliseconds(750, 500), std::uint32_t(0));
+        QCOMPARE(PlankClock::ageMilliseconds(500, 500), std::uint32_t(0));
+        QCOMPARE(PlankClock::ageMilliseconds(1, 60001), std::uint32_t(60000));
+        QCOMPARE(PlankClock::ageMilliseconds(1, std::uint64_t(1) << 40), std::uint32_t(60000));
+        QCOMPARE(PlankClock::ageMilliseconds(500, 750, 100), std::uint32_t(100));
+    }
+
     void reconnectWaitDeadline()
     {
         PlankReconnectPolicy policy;

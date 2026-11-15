@@ -1,5 +1,6 @@
 #pragma once
 #include "../input/remotecursor.h"
+#include "../input/penmetrics.h"
 #include "../plankcallbacktarget.h"
 #include "remotekeymap.h"
 #include <QObject>
@@ -32,6 +33,8 @@ public:
     explicit QtSessionInput(QObject* parent = nullptr);
     ~QtSessionInput() override;
     void startTablets(unsigned hostFeatures); // session worker, once connected
+    // Set once before the tablet worker starts; callback accepts aggregates only.
+    void setPenObserver(PlankPenObserver observer) { m_PenObserver = std::move(observer); }
     void beginReconnect();                  // session worker, acknowledged
     void finishReconnect();                 // session worker, acknowledged
     void shutdown();                        // session worker, joins tablet owner
@@ -51,6 +54,7 @@ public:
     void cancelPointerCapture();
 
     void setStreamSize(QSize size);
+    void setVideoSize(QSize size) { m_VideoSize.store((std::uint64_t(size.width()) << 32) | std::uint32_t(size.height())); }
     void setEnabled(bool enabled);
     void setFocused(bool focused);
     void setSystemKeys(bool captured);
@@ -61,6 +65,7 @@ public:
     void releaseAll();
     void activateMouse();
     void pasteText();
+    void setPasteHandler(std::function<bool()> handler) { m_PasteHandler = std::move(handler); }
 #ifdef Q_OS_MACOS
     void normalizedPen(QPointF position, float pressure, float rotation, int xTilt, int yTilt, bool eraser, int buttons);
     bool capturesNativeKeys() const;
@@ -101,9 +106,11 @@ private:
     };
     void deferPointer(DeferredPointer event);
 
+    std::function<bool()> m_PasteHandler;
     PlankRemoteCursor m_Cursor;
     PlankCallbackTarget<QtRawWacomInput> m_RawControl;
     std::atomic<std::uint64_t> m_StreamSize{0};
+    std::atomic<std::uint64_t> m_VideoSize{0};
     std::atomic_bool m_ActivityPending{false};
     // GUI-thread state: last successfully queued mouse position, in wire pixels.
     // A zero size invalidates it after focus, transport or tablet ownership changes.
@@ -132,6 +139,7 @@ private:
     bool m_TabletFocus = false, m_TabletFinished = false;
     std::uint64_t m_RequestedRevision = 0, m_AppliedRevision = 0;
     std::thread m_TabletThread;
+    PlankPenObserver m_PenObserver;
 #ifdef Q_OS_MACOS
     std::unique_ptr<MacKeyboardCapture> m_MacKeys;
     std::unique_ptr<MacQuitShortcut> m_MacQuit;

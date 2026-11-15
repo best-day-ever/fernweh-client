@@ -1134,30 +1134,58 @@ void TestPlankBroker::brokeredMacLaunchIgnoresUdpPort()
 {
     NvOutputTopology topology;
     QVERIFY(NvOutputTopology::fromJson(fixedCaptureTopology(), topology));
-    // Launch schema 5: services carry the negotiated clipboard and microphone flags.
-    const auto agreement = MacMediaFeatures::legacy(5, topology.appleEncodingMode);
-    QCOMPARE(agreement.launchSchema, 5);
+    // Select the current feature envelope from the actual compiled platform
+    // offer, then construct the launch reply from the production request.
+    const auto offer = MacMediaFeatures::offer(topology.appleEncodingMode);
+    const auto offeredFeatures = offer.value("features").toObject();
+    QJsonObject selectedFeatures;
+    for (const auto& name : MacMediaFeatures::names()) {
+        const auto choices = offeredFeatures.value(name).toArray();
+        const bool selectFeature = MacMediaFeatures::required().contains(name) ||
+                name == QLatin1String("clipboard");
+        selectedFeatures.insert(name, selectFeature && !choices.isEmpty() ? choices.first() : QJsonValue::Null);
+    }
+    const QJsonObject negotiation {
+        {"schema_version", 1}, {"launch_schema", 7},
+        {"transport", MacMediaFeatures::transport()},
+        {"required_features", MacMediaFeatures::required()}, {"features", selectedFeatures},
+    };
+    MacMediaFeatures::Agreement agreement;
+    QVERIFY(MacMediaFeatures::select(negotiation, topology.appleEncodingMode, agreement));
+    QCOMPARE(agreement.launchSchema, 7);
     constexpr int bitrate = 10000;
+    const auto request = MacPreviewLaunch::request(topology, bitrate, 1200, agreement);
+    QVERIFY(!request.isEmpty());
+    auto launchFeatures = request.value("features").toObject();
+    launchFeatures.insert("clipboard", QJsonValue::Null);
     QJsonObject reply {
-        {"schema_version", 5}, {"state", "connecting"},
+        {"schema_version", 7}, {"state", "connecting"},
         {"transport_token", QString::fromLatin1(QByteArray(32, 'k').toBase64())},
         {"udp_port", 28989}, {"max_udp_payload_size", 1200},
         {"capture", topology.toJson().value("capture")},
-        {"services", QJsonObject {{"audio", true}, {"input", true}, {"pen", "normalized"},
-                                  {"cursor", "embedded"}, {"clipboard", false}, {"microphone", false}}},
+        {"transport", request.value("transport")},
+        {"required_features", request.value("required_features")}, {"features", launchFeatures},
     };
     MacPreviewLaunch::Reply parsed;
-    // A reply for another schema is refused, never reinterpreted.
-    QJsonObject schema3 = reply;
-    schema3["schema_version"] = 3;
-    QVERIFY(!MacPreviewLaunch::parseReply(schema3, topology, 28989, 1200, parsed, agreement, bitrate));
-    // The clipboard flag is only accepted where this platform implements clipboard sync.
-    QJsonObject withClipboard = reply;
-    withClipboard["services"] = QJsonObject {{"audio", true}, {"input", true}, {"pen", "normalized"},
-                                             {"cursor", "embedded"}, {"clipboard", true}, {"microphone", false}};
+    // Old schemas are refused, never reinterpreted as the current envelope.
+    for (const int schema : {3, 5, 6}) {
+        auto oldSchema = reply;
+        oldSchema["schema_version"] = schema;
+        QVERIFY(!MacPreviewLaunch::parseReply(oldSchema, topology, 28989, 1200, parsed, agreement, bitrate));
+    }
+    // Optional launch features cannot exceed the platform's selected agreement.
+    auto withClipboard = reply;
+    auto clipboardFeatures = launchFeatures;
+    clipboardFeatures.insert("clipboard", MacMediaFeatures::profile(QStringLiteral("clipboard"), topology.appleEncodingMode));
+    withClipboard["features"] = clipboardFeatures;
     QCOMPARE(MacPreviewLaunch::parseReply(withClipboard, topology, 28989, 1200, parsed, agreement, bitrate),
              NvOutputTopology::PlatformClipboardSyncFeature != 0);
     if (NvOutputTopology::PlatformClipboardSyncFeature != 0) QVERIFY(parsed.clipboard);
+    auto withUnselectedMicrophone = reply;
+    auto microphoneFeatures = launchFeatures;
+    microphoneFeatures.insert("microphone", MacMediaFeatures::profile(QStringLiteral("microphone"), topology.appleEncodingMode));
+    withUnselectedMicrophone["features"] = microphoneFeatures;
+    QVERIFY(!MacPreviewLaunch::parseReply(withUnselectedMicrophone, topology, 28989, 1200, parsed, agreement, bitrate));
     // Direct: udp_port must equal the approved control port.
     QVERIFY(!MacPreviewLaunch::parseReply(reply, topology, 29042, 1200, parsed, agreement, bitrate));
     QVERIFY(MacPreviewLaunch::parseReply(reply, topology, 28989, 1200, parsed, agreement, bitrate));
@@ -1167,6 +1195,7 @@ void TestPlankBroker::brokeredMacLaunchIgnoresUdpPort()
     QCOMPARE(parsed.configuration.sessionPort, 29042u);
     reply["udp_port"] = 0;
     QVERIFY(!MacPreviewLaunch::parseReply(reply, topology, 29042, 1200, parsed, agreement, bitrate, true));
+    QVERIFY(parsed.transportToken.isEmpty());
     reply["udp_port"] = "28989";
     QVERIFY(!MacPreviewLaunch::parseReply(reply, topology, 29042, 1200, parsed, agreement, bitrate, true));
 }

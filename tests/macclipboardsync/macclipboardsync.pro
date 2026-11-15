@@ -1,9 +1,9 @@
 QT += core gui testlib
 DEFINES += PLANK_CLIPBOARD_TEST_PASTEBOARD
 CONFIG += console testcase c++17 link_pkgconfig
+PKGCONFIG += sdl3
 TEMPLATE = app
 
-PKGCONFIG += sdl3
 LIBS += -framework AppKit
 
 INCLUDEPATH += \
@@ -18,5 +18,4 @@ SOURCES += \
 
 HEADERS += \
     ../../app/streaming/macclipboardsync.h \
-    ../../app/streaming/clipboardpolltimer.h \
     ../../app/streaming/plankclipboard.h

@@ -24,6 +24,7 @@ public:
     ~QtVideoPresenter() override;
     void addOutput(QQuickWindow* window, const QtSessionGeometry& geometry, bool primary);
     void setGeometry(QQuickWindow* window, const QtSessionGeometry& geometry);
+    bool setPrimaryOutput(QQuickWindow* window);
     void initializeDevice();
 #ifdef Q_OS_LINUX
     QtSoftwareVideoDevice::Ptr softwareDevice() const { return m_SoftwareDevice; }

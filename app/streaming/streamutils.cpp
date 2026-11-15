@@ -414,7 +414,7 @@ int StreamUtils::getDrmFd(bool preferRenderNode)
     return -1;
 }
 
-extern QAtomicInt g_AsyncLoggingEnabled;
+QAtomicInt g_AsyncLoggingEnabled{0};
 
 void StreamUtils::enterAsyncLoggingMode()
 {

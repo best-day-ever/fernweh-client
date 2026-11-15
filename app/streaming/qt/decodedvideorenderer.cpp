@@ -1,3 +1,5 @@
+#include <QDebug>
+#include "../monotonicclock.h"
 #include "decodedvideorenderer.h"
 #ifdef Q_OS_LINUX
 #include "vaapivideoframe.h"
@@ -92,9 +94,6 @@ public:
 #endif
     }
 
-    bool needsTestFrame() override { return true; }
-    bool ownsPresentationScheduling() const override { return true; }
-    bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) override { return true; }
     int getDecoderColorspace() override { return m_Identity ? COLORSPACE_IDENTITY_GBR : COLORSPACE_REC_709; }
     int getDecoderColorRange() override { return COLOR_RANGE_FULL; }
 #ifdef Q_OS_MACOS
@@ -102,8 +101,7 @@ public:
     {
         // Same decoder capabilities as the existing VideoToolbox/Metal path;
         // changing the window owner must not change loss recovery negotiation.
-        return CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC |
-               CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
+        return CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC;
     }
 #endif
 
@@ -150,7 +148,7 @@ public:
                 // claim of panel scan-out; it is the same presentation edge
                 // used by the existing audio synchronizer, not decode arrival.
                 if (mediaPts != AV_NOPTS_VALUE)
-                    PlankAvSync::publishVideoClock(mediaPts, uint32_t(SDL_GetTicks()));
+                    PlankAvSync::publishVideoClock(mediaPts, uint32_t(PlankClock::milliseconds()));
             } else {
                 ++stats->dropped;
             }

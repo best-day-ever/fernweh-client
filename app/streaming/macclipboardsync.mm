@@ -1,8 +1,10 @@
+#include <SDL3/SDL_stdinc.h>
+#include <QtGlobal>
+#include <QDebug>
 #include "macclipboardsync.h"
 #include "clipboardplatform.h"
 
 #include <AppKit/AppKit.h>
-#include <SDL3/SDL.h>
 
 #ifdef PLANK_CLIPBOARD_TEST_PASTEBOARD
 // Supplied only by the native test binary; never linked into the application.
@@ -45,7 +47,7 @@ std::string readGeneralPasteboardText()
             if (text != nil && text.length > 0) {
                 const auto size = [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
                 if (size > PLANK_CLIPBOARD_MAX_TEXT_SIZE) {
-                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Clipboard text exceeds 512 KiB; not shared");
+                    qWarning("Clipboard text exceeds 512 KiB; not shared");
                     return {};
                 }
                 NSData* utf8 = [text dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];

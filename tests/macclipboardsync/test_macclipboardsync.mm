@@ -3,7 +3,7 @@
 #include <AppKit/AppKit.h>
 
 #include "macclipboardsync.h"
-#include "clipboardpolltimer.h"
+#include <QTimer>
 #include <thread>
 
 NSPasteboard* plankClipboardTestPasteboard()
@@ -395,50 +395,23 @@ void TestMacClipboardSync::validatesUnicodeScalars()
 
 void TestMacClipboardSync::periodicPollingResumesAfterReconnect()
 {
-    QVERIFY(SDL_Init(SDL_INIT_EVENTS));
-    struct SdlCleanup { ~SdlCleanup() { SDL_Quit(); } } cleanup;
-    constexpr Sint32 pollEvent = 1234;
     unsigned sends = 0;
-    MacClipboardSync sync([&](const std::uint8_t*, std::size_t) {
-        ++sends;
-        return true;
-    }, [] { return true; }, [] { return true; }, [] { return true; });
-    ClipboardPollTimer timer;
-    auto pump = [&] {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_USER && event.user.code == pollEvent) {
-                sync.pollLocalClipboardOnMainThread();
-            }
-        }
-    };
+    MacClipboardSync sync([&](const std::uint8_t*, std::size_t) { ++sends; return true; },
+        [] { return true; }, [] { return true; }, [] { return true; });
+    QTimer timer;
+    connect(&timer, &QTimer::timeout, [&] { sync.pollLocalClipboardOnMainThread(); });
+    timer.start(50);
     setPasteboardText("before reconnect");
     sync.start();
-    QVERIFY(timer.start(pollEvent));
-    pump();
-    QCOMPARE(sends, 1U);
-
-    // Receiver teardown, failed attempt, and successful restart. Focus stays
-    // true throughout; no focus event or manual poll can wake the new copy.
-    timer.stop();
+    QTRY_COMPARE(sends, 1u);
     sync.stop();
-    SDL_FlushEvents(SDL_EVENT_USER, SDL_EVENT_USER);
     setPasteboardText("during reconnect");
-    QTest::qWait(300);
-    pump();
-    QCOMPARE(sends, 1U);
+    QTest::qWait(150);
+    QCOMPARE(sends, 1u);
     sync.start();
-    QVERIFY(timer.start(pollEvent));
-    pump(); // Consume the immediate event before the copy under test.
-    const auto afterRestart = sends;
+    QTRY_COMPARE(sends, 2u);
     setPasteboardText("after reconnect");
-    // Hosted runners may schedule SDL's timer thread late. Wait for the real
-    // queued timer event with a bound, rather than assuming 100 ms of slack
-    // beyond the 250 ms interval is sufficient under load.
-    QTRY_VERIFY_WITH_TIMEOUT((pump(), sends > afterRestart), 2000);
-    QCOMPARE(sends, afterRestart + 1);
-    timer.stop();
-    sync.stop();
+    QTRY_COMPARE(sends, 3u);
 }
 
 // Pair the real timer/NSPasteboard lifecycle test above with a guard on its

@@ -9,6 +9,7 @@
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickWindow>
+#include <QSet>
 #include <QTimer>
 #include <QVariantMap>
 #include <functional>
@@ -37,6 +38,7 @@ class QtSessionWindow : public QQuickWindow
     Q_PROPERTY(QVariantMap telemetry READ telemetry WRITE setTelemetry NOTIFY telemetryChanged)
     Q_PROPERTY(QString statisticsText READ statisticsText WRITE setStatisticsText NOTIFY statisticsChanged)
     Q_PROPERTY(bool statisticsVisible READ statisticsVisible WRITE setStatisticsVisible NOTIFY statisticsChanged)
+    Q_PROPERTY(QString screensPrompt READ screensPrompt NOTIFY screensPromptChanged)
     Q_PROPERTY(bool immersiveMouse READ immersiveMouse NOTIFY immersiveMouseChanged)
     Q_PROPERTY(bool immersiveMouseAvailable READ immersiveMouseAvailable NOTIFY immersiveMouseChanged)
 public:
@@ -89,6 +91,15 @@ public:
     void discardPointerMotionBefore(quint64 timestamp) { m_PointerTimestampBoundary = timestamp; }
     bool reanchorPointer(QPointF framePosition);
 
+    QString screensPrompt() const { return m_ScreensPromptText; }
+    void setScreensPrompt(const QString& text) {
+        if (text == m_ScreensPromptText) return;
+        m_ScreensPromptText = text; emit screensPromptChanged();
+        if (!text.isEmpty()) { setToolbarVisible(true); scheduleHide(); }
+    }
+    Q_INVOKABLE void applyScreens() { emit screensApplyRequested(); }
+    Q_INVOKABLE void keepScreens() { emit screensKeepRequested(); }
+    Q_INVOKABLE void setupScreens() { emit screensSetupRequested(); }
     void setPresentation(const QtSessionGeometry& geometry);
     const QtSessionGeometry& presentation() const { return m_Geometry; }
     // During a compositor mouse grab, coordinates can leave this window. The
@@ -106,15 +117,21 @@ public:
     void cancelInput();
     Q_INVOKABLE void moveToolbar(qreal logicalLeft);
     Q_INVOKABLE void toggleFullscreen();
+    Q_INVOKABLE void toggleToolbar();
     Q_INVOKABLE void fullscreenDisplays(bool span) { cancelInput(); emit fullscreenDisplaysRequested(span); }
     Q_INVOKABLE void minimize();
     Q_INVOKABLE void openNewConnection();
     Q_INVOKABLE void disconnectSession();
     Q_INVOKABLE void toggleMicrophone() { emit microphoneRequested(); }
     Q_INVOKABLE void toggleCamera() { emit cameraRequested(); }
+    Q_INVOKABLE void chooseFiles() { emit filesRequested(); }
     Q_INVOKABLE void toggleStatistics() { setStatisticsVisible(!statisticsVisible()); }
 
 signals:
+    void screensPromptChanged();
+    void screensApplyRequested();
+    void screensKeepRequested();
+    void screensSetupRequested();
     void statusChanged();
     void telemetryChanged();
     void statisticsChanged();
@@ -143,6 +160,7 @@ signals:
     void remotePenCancelled();
     void immersiveMouseRequested();
     void immersiveMouseChanged();
+    void filesRequested();
     void bitrateRequested(int kbps);
     void disconnectRequested();
 
@@ -187,6 +205,8 @@ private:
     std::function<bool(QPointF, QPointF&)> m_DragMapper;
     std::function<bool()> m_NativeKeyCapture;
     QPointer<QQuickItem> m_Toolbar;
+    QPointer<QQuickItem> m_ScreensPrompt;
+    QString m_ScreensPromptText;
     QTimer m_RevealTimer;
     QTimer m_HideTimer;
     QCursor m_RemoteCursor;
@@ -196,6 +216,7 @@ private:
     Qt::MouseButtons m_LocalButtons;
     struct Key { quint32 scanCode; int key; Qt::KeyboardModifiers modifiers; };
     QMap<quint64, Key> m_RemoteKeys;
+    QSet<quint64> m_LocalShortcutKeys;
     bool m_RemoteInputEnabled = false;
     bool m_PointerPresent = false;
     bool m_ToolbarVisible = false;

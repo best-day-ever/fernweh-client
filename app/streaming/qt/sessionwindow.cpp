@@ -63,6 +63,7 @@ QtSessionWindow::QtSessionWindow(QWindow* parent, QQuickRenderControl* renderCon
     connect(this, &QWindow::heightChanged, this, &QtSessionWindow::synchronizeSceneSize);
     if (rootObject()) {
         m_Toolbar = rootObject()->findChild<QQuickItem*>(QStringLiteral("sessionToolbar"));
+        m_ScreensPrompt = rootObject()->findChild<QQuickItem*>(QStringLiteral("screensPrompt"));
         m_TabletCursor = new QtTabletCursorItem(rootObject());
         m_TabletCursor->setVisible(false);
     }
@@ -77,8 +78,7 @@ QtSessionWindow::QtSessionWindow(QWindow* parent, QQuickRenderControl* renderCon
         }
     });
     connect(&m_HideTimer, &QTimer::timeout, this, [this] {
-        if (!m_Pinned && !m_DisplayMenuOpen && !m_LocalButtons &&
-                (!m_PointerPresent || !overToolbar(m_Pointer))) {
+        if (!m_Pinned && !m_DisplayMenuOpen && !m_LocalButtons) {
             setToolbarVisible(false);
         }
     });
@@ -155,7 +155,7 @@ void QtSessionWindow::updateTabletCursor()
     QPointF point;
     const bool visible = m_RemoteInputEnabled && !m_Waiting && !m_DisplayMenuOpen && (m_TabletActive || m_PointerCaptured) && !m_EmbeddedCursor &&
         m_HostCursorVisible && m_HostPositionValid && !m_CursorImage.isNull() &&
-        m_Geometry.fromStream(m_HostCursorPosition, point);
+        m_Geometry.fromCapture(m_HostCursorPosition, point);
     m_TabletCursor->setVisible(visible);
     if (!visible) return;
     const qreal sx = m_Geometry.destinationPixels.width() / m_Geometry.sourcePixels.width() * width() / m_Geometry.drawableSize.width();
@@ -175,6 +175,16 @@ void QtSessionWindow::setPinned(bool pinned)
         scheduleHide();
     }
     emit toolbarChanged();
+}
+
+void QtSessionWindow::toggleToolbar()
+{
+    const bool visible = !m_ToolbarVisible;
+    cancelInput();
+    m_RevealTimer.stop();
+    m_HideTimer.stop();
+    setToolbarVisible(visible);
+    if (visible) scheduleHide();
 }
 
 void QtSessionWindow::setWaiting(bool waiting)
@@ -259,8 +269,10 @@ void QtSessionWindow::disconnectSession()
 
 bool QtSessionWindow::overToolbar(const QPointF& position) const
 {
-    return m_Toolbar && m_Toolbar->isVisible() &&
-            m_Toolbar->contains(m_Toolbar->mapFromScene(position));
+    return (m_Toolbar && m_Toolbar->isVisible() &&
+            m_Toolbar->contains(m_Toolbar->mapFromScene(position))) ||
+           (m_ScreensPrompt && m_ScreensPrompt->isVisible() &&
+            m_ScreensPrompt->contains(m_ScreensPrompt->mapFromScene(position)));
 }
 
 bool QtSessionWindow::localPointer(const QPointF& position) const
@@ -278,7 +290,7 @@ void QtSessionWindow::setToolbarVisible(bool visible)
 
 void QtSessionWindow::scheduleHide()
 {
-    if (m_Pinned || m_DisplayMenuOpen || m_LocalButtons || (m_PointerPresent && overToolbar(m_Pointer))) {
+    if (m_Pinned || m_DisplayMenuOpen || m_LocalButtons) {
         m_HideTimer.stop();
     } else if (m_ToolbarVisible && !m_HideTimer.isActive()) {
         m_HideTimer.start();
@@ -481,9 +493,11 @@ void QtSessionWindow::keyPressEvent(QKeyEvent* event)
         const int shortcut = qtSessionShortcut(qtPhysicalKey(event), event->key(), qtPhysicalModifiers(event->modifiers()));
         // Disconnect is local even during startup, released input or a Host
         // timeout. It must not depend on a healthy remote input channel.
-        if (shortcut == Qt::Key_Q || (!m_Waiting && shortcut == Qt::Key_Z)) {
+        if (shortcut == Qt::Key_Q || shortcut == Qt::Key_T || (!m_Waiting && shortcut == Qt::Key_Z)) {
             if (!event->isAutoRepeat()) {
+                m_LocalShortcutKeys.insert(keyIdentity(event));
                 if (shortcut == Qt::Key_Q) disconnectSession();
+                else if (shortcut == Qt::Key_T) toggleToolbar();
                 else emit inputRecaptureRequested();
             }
             event->accept();
@@ -506,6 +520,10 @@ void QtSessionWindow::keyReleaseEvent(QKeyEvent* event)
 {
     if (m_NativeKeyCapture && m_NativeKeyCapture()) { event->accept(); return; }
     const auto id = keyIdentity(event);
+    if (m_LocalShortcutKeys.contains(id)) {
+        if (!event->isAutoRepeat()) m_LocalShortcutKeys.remove(id);
+        event->accept(); return;
+    }
     if (m_RemoteKeys.contains(id)) {
         // X11 auto-repeat can synthesize release/press pairs; held ownership
         // lasts until the real release on both X11 and Wayland.

@@ -89,17 +89,38 @@ QtVideoPresenter::~QtVideoPresenter()
 void QtVideoPresenter::addOutput(QQuickWindow* window, const QtSessionGeometry& geometry, bool primary)
 {
     Q_ASSERT(QThread::currentThread() == thread());
-    Q_ASSERT(!m_Started && window);
+    Q_ASSERT(window);
     auto* item = new QtPlatformVideoItem(window->contentItem());
     item->setPresentation(geometry);
     item->setPrimaryOutput(primary);
     m_Outputs.push_back({window, item, geometry, primary});
+#ifdef Q_OS_LINUX
+    if (m_SoftwareDevice) item->setSoftwareDevice(m_SoftwareDevice);
+#endif
+    std::lock_guard<std::mutex> lock(m_State->mutex);
     m_State->outputs.push_back(item->presentationFeedback());
     m_State->required.push_back(false);
     if (primary) {
         m_State->primary = item->presentationFeedback();
         m_State->primaryIndex = m_Outputs.size() - 1;
     }
+}
+
+bool QtVideoPresenter::setPrimaryOutput(QQuickWindow* window)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    const auto found = std::find_if(m_Outputs.begin(), m_Outputs.end(),
+        [window](const auto& output) { return output.window == window; });
+    if (found == m_Outputs.end()) return false;
+    const auto index = size_t(found - m_Outputs.begin());
+    for (auto& output : m_Outputs) {
+        output.primary = output.window == window;
+        if (output.item) output.item->setPrimaryOutput(output.primary);
+    }
+    std::lock_guard<std::mutex> lock(m_State->mutex);
+    m_State->primaryIndex = index;
+    m_State->primary = m_State->outputs[index];
+    return true;
 }
 
 void QtVideoPresenter::setGeometry(QQuickWindow* window, const QtSessionGeometry& geometry)

@@ -165,11 +165,6 @@ public:
     getXmlString(QString xml,
                  QString tagName);
 
-    static
-    QByteArray
-    getXmlStringFromHex(QString xml,
-                        QString tagName);
-
     QString
     openConnectionToString(QUrl baseUrl,
                            QString command,
@@ -237,8 +232,6 @@ public:
              int appId,
              PSTREAM_CONFIGURATION streamConfig,
              bool localAudio,
-             int gamepadMask,
-             bool persistGameControllersOnDisconnect,
              QString captureDisplayMode,
              QString topologyGeneration,
              int plankProtocolVersion,
@@ -265,9 +258,6 @@ public:
 
     QVector<NvApp>
     getAppList();
-
-    QImage
-    getBoxArt(int appId);
 
     static
     QVector<NvDisplayMode>

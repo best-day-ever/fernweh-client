@@ -18,6 +18,10 @@
 // Link-time test doubles only. The production runtime uses the unchanged
 // readers; these tests require no physical device or transport connection.
 namespace {
+#ifdef Q_OS_MACOS
+std::function<bool(const MacKeyEvent&)> nativeHotkey;
+bool nativeCaptureActive = false;
+#endif
 struct Wire { int kind, a, b, c, d; };
 QList<Wire> wire;
 int positionResult = 0;
@@ -87,20 +91,23 @@ extern "C" int LiSendUtf8TextEvent(const char*, unsigned int) { return 0; }
 extern "C" int LiSendPenEvent(uint8_t, uint8_t, uint8_t, float, float, float, float, float, uint16_t, uint8_t) { return 0; }
 class MacRawWacomInput::Impl {};
 MacRawWacomInput::MacRawWacomInput(std::function<void()> activity, std::function<bool()> before, std::function<void()> after) {
+    tabletCall("raw-create");
     registerTabletActivity(std::move(activity));
     tabletBeforePointer = std::move(before); tabletAfterPointer = std::move(after);
 }
-MacRawWacomInput::~MacRawWacomInput() { registerTabletActivity({}); tabletBeforePointer = {}; tabletAfterPointer = {}; }
-void MacRawWacomInput::setActive(bool) {}
-void MacRawWacomInput::beginReconnect() {}
-void MacRawWacomInput::finishReconnect() {}
+MacRawWacomInput::~MacRawWacomInput() { tabletCall("raw-destroy"); registerTabletActivity({}); tabletBeforePointer = {}; tabletAfterPointer = {}; }
+void MacRawWacomInput::setActive(bool active) { tabletCall(active ? "raw-active" : "raw-inactive"); }
+void MacRawWacomInput::beginReconnect() { tabletCall("raw-suspend"); }
+void MacRawWacomInput::finishReconnect() { tabletCall("raw-resume"); }
 void MacRawWacomInput::handleControl(const unsigned char*, unsigned int) {}
 struct MacKeyboardCapture::State {};
 MacKeyboardCapture::MacKeyboardCapture(std::function<bool()>, std::function<void()>) {}
-MacKeyboardCapture::~MacKeyboardCapture() = default;
+MacKeyboardCapture::~MacKeyboardCapture() { nativeHotkey = {}; nativeCaptureActive = false; }
 void MacKeyboardCapture::refresh() {}
+bool MacKeyboardCapture::capturesKeys() const { return nativeCaptureActive; }
 void MacKeyboardCapture::setQueueWake(std::function<bool()>) {}
-void MacKeyboardCapture::dispatchPending(const std::function<void(SDL_KeyboardEvent*)>&) {}
+void MacKeyboardCapture::setLocalHotkeyHandler(std::function<bool(const MacKeyEvent&)> handler) { nativeHotkey = std::move(handler); }
+void MacKeyboardCapture::dispatchPending(const std::function<void(const MacKeyEvent&)>&) {}
 bool MacKeyboardCapture::suppressSdlKeyEvent() const { return false; }
 struct MacQuitShortcut::State {};
 MacQuitShortcut::MacQuitShortcut(std::function<bool()>) {}
@@ -110,14 +117,19 @@ void MacQuitShortcut::refresh() {}
 
 PlankWacomTransportDecision plankWacomTransportForConnectedDevice()
 { return {normalized ? PlankWacomTransport::NormalizedPen : PlankWacomTransport::ExactRawHid, 0, 0}; }
-LinuxRawWacomInput::LinuxRawWacomInput(std::function<void()> activity)
+// These link-time doubles never create evdev nodes. Complete the opaque type
+// so the fake destructor can destroy its always-empty observer container.
+struct LinuxRawWacomInput::PenNode {};
+LinuxRawWacomInput::LinuxRawWacomInput(std::function<void()> activity, PlankPenObserver observer)
+    : m_PenObserver(std::move(observer))
 { registerTabletActivity(std::move(activity)); tabletCall("raw-create"); }
 LinuxRawWacomInput::~LinuxRawWacomInput() { registerTabletActivity({}); tabletCall("raw-destroy"); }
 void LinuxRawWacomInput::setActive(bool active) { tabletCall(active ? "raw-active" : "raw-inactive"); }
 void LinuxRawWacomInput::beginReconnect() { tabletCall("raw-suspend"); }
 void LinuxRawWacomInput::finishReconnect() { tabletCall("raw-resume"); }
 void LinuxRawWacomInput::handleControl(const unsigned char*, unsigned int) {}
-LinuxWacomInput::LinuxWacomInput(std::function<void()> activity)
+LinuxWacomInput::LinuxWacomInput(std::function<void()> activity, PlankPenObserver observer)
+    : m_PenObserver(std::move(observer))
 { registerTabletActivity(std::move(activity)); tabletCall("pen-create"); }
 LinuxWacomInput::~LinuxWacomInput() { registerTabletActivity({}); tabletCall("pen-destroy"); }
 void LinuxWacomInput::setActive(bool active) { tabletCall(active ? "pen-active" : "pen-inactive"); }
@@ -137,6 +149,120 @@ private slots:
         tabletCalls.clear(); tabletUsedGui = false; normalized = false;
         tabletActivityHandler = {};
         qunsetenv("PLANK_EXTERNAL_WACOM_BRIDGE");
+    }
+    void cursorOffersUseCaptureSizeWhileInputUsesTheDesktop()
+    {
+        Fixture f;
+        f.input.setStreamSize({8560,2880});
+        f.input.setVideoSize({5120,4320});
+        QSignalSpy positions(&f.input,&QtSessionInput::cursorPosition);
+        PLANK_CURSOR_POSITION_WIRE_MESSAGE packet{};
+        packet.magic=qToLittleEndian(quint32(PLANK_CURSOR_POSITION_WIRE_MAGIC));
+        packet.version=qToLittleEndian(quint16(PLANK_CURSOR_POSITION_WIRE_VERSION));
+        packet.sequence=qToLittleEndian(quint64(1));
+        packet.x=qToLittleEndian(quint32(2560)); packet.y=qToLittleEndian(quint32(2880));
+        packet.frameWidth=qToLittleEndian(quint32(5120)); packet.frameHeight=qToLittleEndian(quint32(4320));
+        f.input.handleCursorPosition(reinterpret_cast<const unsigned char*>(&packet),sizeof(packet));
+        QCoreApplication::processEvents();
+        QCOMPARE(positions.size(),1);
+        QCOMPARE(positions.first().first().toPointF(),QPointF(2560,2880));
+        packet.sequence=qToLittleEndian(quint64(2));
+        packet.frameWidth=qToLittleEndian(quint32(8560)); packet.frameHeight=qToLittleEndian(quint32(2880));
+        f.input.handleCursorPosition(reinterpret_cast<const unsigned char*>(&packet),sizeof(packet));
+        QCoreApplication::processEvents(); QCOMPARE(positions.size(),1);
+    }
+    void toolbarShortcutConsumesRepeatAndRelease()
+    {
+        Fixture f;
+        QSignalSpy actions(&f.input, &QtSessionInput::shortcutRequested);
+#ifdef Q_OS_MACOS
+        constexpr quint32 scan = 17;
+#else
+        constexpr quint32 scan = KEY_T + 8;
+#endif
+        const auto mods = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+        f.input.key(scan, Qt::Key_T, true, false, mods);
+        f.input.key(scan, Qt::Key_T, true, true, mods);
+        f.input.key(scan, Qt::Key_T, false, false, {});
+        QCOMPARE(actions.size(), 1);
+        QCOMPARE(actions.first().first().toInt(), int(Qt::Key_T));
+        QVERIFY(wire.isEmpty());
+        f.input.key(scan, Qt::Key_T, true, false, {});
+        f.input.key(scan, Qt::Key_T, false, false, {});
+        QCOMPARE(wire.size(), 2);
+        QCOMPARE(wire.first().a, 0x54);
+    }
+#ifdef Q_OS_MACOS
+    void nativeReservedControlsUseQueuedQtActions()
+    {
+        Fixture f; f.input.setSystemKeys(true);
+        nativeCaptureActive = true;
+        QSignalSpy actions(&f.input, &QtSessionInput::shortcutRequested);
+        QVERIFY(nativeHotkey);
+        const auto mods = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+        for (const auto code : {12u, 17u}) {
+            const auto previous = actions.size();
+            QVERIFY(nativeHotkey({code, true, mods}));
+            QCOMPARE(actions.size(), previous);
+            QCoreApplication::processEvents();
+            QCOMPARE(actions.size(), previous + 1);
+            QCOMPARE(actions.last().first().toInt(), code == 12 ? int(Qt::Key_Q) : int(Qt::Key_T));
+            QVERIFY(nativeHotkey({code, true, mods, true}));
+            QCoreApplication::processEvents();
+            QCOMPARE(actions.size(), previous + 1);
+        }
+        const auto previous = actions.size();
+        QVERIFY(nativeHotkey({12, true, mods}));
+        f.input.setFocused(false);
+        QCoreApplication::processEvents();
+        QCOMPARE(actions.size(), previous);
+        f.input.setFocused(true);
+        QVERIFY(nativeHotkey({12, true, mods}));
+        nativeCaptureActive = false; // Permission/tap revocation before delivery.
+        QCoreApplication::processEvents();
+        QCOMPARE(actions.size(), previous);
+        QVERIFY(wire.isEmpty());
+    }
+    void queuedNativeControlDoesNotOutliveInput()
+    {
+        QObject observer; int delivered = 0;
+        {
+            Fixture f; f.input.setSystemKeys(true);
+            nativeCaptureActive = true;
+            connect(&f.input, &QtSessionInput::shortcutRequested, &observer, [&](int) { ++delivered; });
+            QVERIFY(nativeHotkey({17, true, Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier}));
+            QCOMPARE(delivered, 0);
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(delivered, 0);
+    }
+#endif
+    void pasteWaitsForClipboardPublicationAndConsumesItsKeyRelease()
+    {
+        Fixture f;
+        int requests = 0;
+        f.input.setPasteHandler([&] { ++requests; return true; });
+#ifdef Q_OS_MACOS
+        constexpr quint32 scan = 9;
+#else
+        constexpr quint32 scan = 55;
+#endif
+        f.input.key(scan, Qt::Key_V, true, false, Qt::ControlModifier);
+        f.input.key(scan, Qt::Key_V, false, false, Qt::ControlModifier);
+        QCOMPARE(requests, 1);
+        QVERIFY(wire.isEmpty());
+        f.input.setPasteHandler([&] { ++requests; return false; });
+        f.input.key(scan, Qt::Key_V, true, false, Qt::ControlModifier);
+        f.input.key(scan, Qt::Key_V, false, false, Qt::ControlModifier);
+        QCOMPARE(requests, 2);
+        QCOMPARE(wire.size(), 2);
+        QCOMPARE(wire[0].a, 0x56);
+        QCOMPARE(wire[0].b, int(KEY_ACTION_DOWN));
+        QCOMPARE(wire[1].b, int(KEY_ACTION_UP));
+        f.input.setEnabled(false);
+        f.input.key(scan, Qt::Key_V, true, false, Qt::ControlModifier);
+        f.input.pasteText();
+        QCOMPARE(requests, 2);
     }
     void pointerDragHasOrderedDeltasAndAuthoritativeEnd()
     {
@@ -290,6 +416,7 @@ private slots:
     void immersiveRawTabletHandoffOrdersCancelBeforeReportAndExcludesNewBegin()
     {
         Fixture f; f.start(LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND);
+        QTRY_VERIFY(saw("raw-active"));
         QVERIFY(tabletBeforePointer); QVERIFY(tabletAfterPointer);
         f.capture();
         std::atomic<bool> done{false};
@@ -309,6 +436,7 @@ private slots:
     void immersiveBeginDoesNotSplitRawTabletReportEnqueue()
     {
         Fixture f; f.start(LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND);
+        QTRY_VERIFY(saw("raw-active"));
         std::atomic<bool> locked{false}, release{false}; bool accepted = false;
         std::thread reader([&] {
             accepted = tabletBeforePointer(); locked.store(true);
@@ -474,8 +602,10 @@ private slots:
         QTest::addColumn<bool>("pending");
         QTest::newRow("raw-active") << false << false;
         QTest::newRow("raw-pending") << false << true;
+#ifndef Q_OS_MACOS
         QTest::newRow("normalized-active") << true << false;
         QTest::newRow("normalized-pending") << true << true;
+#endif
     }
     void wheelRepositionsAfterTablet()
     {
@@ -505,7 +635,9 @@ private slots:
     {
         QTest::addColumn<bool>("pen");
         QTest::newRow("descriptor-driven-raw") << false;
+#ifndef Q_OS_MACOS
         QTest::newRow("normalized-first-generation") << true;
+#endif
     }
     void tabletLifecycle()
     {
@@ -530,6 +662,9 @@ private slots:
     }
     void externalTabletBridgeDoesNotOpenASecondReader()
     {
+#ifdef Q_OS_MACOS
+        QSKIP("External bridge selection belongs to the Linux tablet adapter");
+#endif
         qputenv("PLANK_EXTERNAL_WACOM_BRIDGE", "1");
         { Fixture f; f.start(LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND | LI_FF_PEN_TOUCH_EVENTS); }
         std::lock_guard<std::mutex> lock(tabletMutex);

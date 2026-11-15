@@ -1,3 +1,17 @@
+## 1.2.37 — Upstream integration
+
+### Client
+- Keep selected monitors, primary display, crops and shared-session views through layout changes, Apply/Keep and reconnects.
+- Use native Mac session windows, audio and microphone capture while retaining the Windows display and audio adapters.
+- Preserve clipboard and file-transfer permissions when focus, participants or sessions change.
+- Keep local disconnect and toolbar shortcuts responsive during busy remote input; retain toolbar pinning and idle hiding.
+- Keep the selected video format when choosing hardware decoding or exact-format software fallback.
+
+### Host
+- Improve Linux capture-buffer reuse and preserve precise 8-bit and 10-bit pixel conversion.
+- Retain pending refresh requests and recover temporary sign-in/display transitions.
+- Bound large-frame send buffering and request receive headroom without changing system-wide network settings.
+
 ## 1.2.22 — Shared sessions and connection recovery
 
 - Keep connections to several workstations open at once. Choose New connection in the launcher or session toolbar, then select another workstation in its own Fernweh window. Remembered sign-in is reused; closing a connection leaves the others running.
