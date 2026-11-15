@@ -519,7 +519,7 @@ CenteredGridView {
             hostDisplayPolicy = computerModel.plankHostDisplayPolicy(pcIndex)
             editVideoSettings.load(originalCaptureSource, originalProfile,
                                    originalProfileBitratesKbps, [])
-            editHostLayout.currentIndex = hostLayoutIndex
+            editHostLayout.selectLayout(hostLayoutIndex)
             editVirtualMode1.currentIndex = virtualMode1Index
             editVirtualMode2.currentIndex = virtualMode2Index
             ensureVirtualModesCompatible()
@@ -581,7 +581,7 @@ CenteredGridView {
                 hostAddress: editAddressText.text
                 probingEnabled: editBookmarkDialog.visible
                 nvfbcDefaultProfile: StreamingPreferences.PLANK_PROFILE_H264_10BIT_444
-                onCaptureSourceEdited: editHostLayout.currentIndex = 0
+                onCaptureSourceEdited: editHostLayout.selectLayout(0)
                 onProfileActivated: editBookmarkDialog.ensureVirtualModesCompatible()
             }
 
@@ -593,17 +593,14 @@ CenteredGridView {
             PlankHostLayoutBox {
                 id: editHostLayout
                 Layout.fillWidth: true
-                model: editVideoSettings.captureSource === 2 ? [qsTr("Match client display(s)"), qsTr("One Mac virtual display")] : [
-                    qsTr("Match client displays"),
-                    qsTr("Match Host"),
-                    qsTr("One virtual display"),
-                    qsTr("Two virtual displays (horizontal)")
-                ]
+                captureSource: editVideoSettings.captureSource
+                hostDisplayPolicy: editVideoSettings.hostDisplayPolicy >= 0 ? editVideoSettings.hostDisplayPolicy :
+                    editAddressText.text.trim() === editBookmarkDialog.originalAddress.trim() ? editBookmarkDialog.hostDisplayPolicy : -1
             }
 
             Label {
                 Layout.fillWidth: true
-                visible: editVideoSettings.captureSource !== 2 && editHostLayout.currentIndex === 0
+                visible: editVideoSettings.captureSource !== 2 && editHostLayout.layoutChoice === 0
                 text: visible ? ComputerManager.plankMatchClientSummary() : ""
                 wrapMode: Text.Wrap
                 opacity: 0.72
@@ -611,7 +608,7 @@ CenteredGridView {
 
             Label {
                 Layout.fillWidth: true
-                visible: editVideoSettings.captureSource !== 2 && editBookmarkDialog.hostDisplayPolicy === 0
+                visible: editVideoSettings.captureSource !== 2 && editHostLayout.hostDisplayPolicy === 0
                 text: qsTr("Match Host requires physical displays attached to the workstation.")
                 wrapMode: Text.Wrap
                 opacity: 0.72
@@ -620,12 +617,12 @@ CenteredGridView {
             Label {
                 text: editVideoSettings.captureSource === 2 ? qsTr("Mac desktop resolution") : qsTr("Virtual display 1 resolution")
                 font.bold: true
-                opacity: (editVideoSettings.captureSource === 2 ? editHostLayout.currentIndex === 1 : editHostLayout.currentIndex >= 2) ? 1.0 : 0.5
+                opacity: (editVideoSettings.captureSource === 2 ? editHostLayout.layoutChoice === 1 : editHostLayout.layoutChoice >= 2) ? 1.0 : 0.5
             }
             PlankComboBox {
                 id: editVirtualMode1
                 Layout.fillWidth: true
-                enabled: (editVideoSettings.captureSource === 2 ? editHostLayout.currentIndex === 1 : editHostLayout.currentIndex >= 2)
+                enabled: (editVideoSettings.captureSource === 2 ? editHostLayout.layoutChoice === 1 : editHostLayout.layoutChoice >= 2)
                 model: editBookmarkDialog.virtualModeChoices
                 delegate: ItemDelegate {
                     width: editVirtualMode1.width

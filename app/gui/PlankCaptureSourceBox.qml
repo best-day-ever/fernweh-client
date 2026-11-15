@@ -10,6 +10,7 @@ PlankComboBox {
     property string hostAddress: ""
     property bool probingEnabled: false
     property int hostPlatform: 0
+    property int hostDisplayPolicy: -1
     // A platform already known without probing (remote workstations: from
     // their last connect); 0 = use the probe result.
     property int fixedPlatform: 0

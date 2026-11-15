@@ -34,6 +34,7 @@ ColumnLayout {
     property var officeBitratesKbps: []
     property var internetBitratesKbps: []
     readonly property int captureSource: captureBox.captureSource
+    readonly property int hostDisplayPolicy: captureBox.hostDisplayPolicy
     property int videoProfile: nvfbcDefaultProfile
     readonly property string problemText: problemFor(captureSource, videoProfile)
 

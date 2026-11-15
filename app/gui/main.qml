@@ -647,7 +647,7 @@ ApplicationWindow {
                 hostAddress: addressText.text
                 probingEnabled: addPcDialog.visible
                 nvfbcDefaultProfile: StreamingPreferences.PLANK_PROFILE_NVENC_HEVC_10BIT_444
-                onCaptureSourceEdited: addHostLayout.currentIndex = 0
+                onCaptureSourceEdited: addHostLayout.selectLayout(0)
                 onProfileActivated: addPcDialog.ensureVirtualModesCompatible()
             }
 
@@ -660,17 +660,13 @@ ApplicationWindow {
             PlankHostLayoutBox {
                 id: addHostLayout
                 Layout.fillWidth: true
-                model: addVideoSettings.captureSource === 2 ? [qsTr("Match client display(s)"), qsTr("One Mac virtual display")] : [
-                    qsTr("Match client displays"),
-                    qsTr("Match Host"),
-                    qsTr("One virtual display"),
-                    qsTr("Two virtual displays (horizontal)")
-                ]
+                captureSource: addVideoSettings.captureSource
+                hostDisplayPolicy: addVideoSettings.hostDisplayPolicy
             }
 
             Label {
                 Layout.fillWidth: true
-                visible: addVideoSettings.captureSource !== 2 && addHostLayout.currentIndex === 0
+                visible: addVideoSettings.captureSource !== 2 && addHostLayout.layoutChoice === 0
                 text: visible ? ComputerManager.plankMatchClientSummary() : ""
                 wrapMode: Text.Wrap
                 opacity: 0.72
@@ -679,13 +675,13 @@ ApplicationWindow {
             Label {
                 text: addVideoSettings.captureSource === 2 ? qsTr("Mac desktop resolution") : qsTr("Virtual display 1 resolution")
                 font.bold: true
-                opacity: (addVideoSettings.captureSource === 2 ? addHostLayout.currentIndex === 1 : addHostLayout.currentIndex >= 2) ? 1.0 : 0.5
+                opacity: (addVideoSettings.captureSource === 2 ? addHostLayout.layoutChoice === 1 : addHostLayout.layoutChoice >= 2) ? 1.0 : 0.5
             }
 
             PlankComboBox {
                 id: addVirtualMode1
                 Layout.fillWidth: true
-                enabled: (addVideoSettings.captureSource === 2 ? addHostLayout.currentIndex === 1 : addHostLayout.currentIndex >= 2)
+                enabled: (addVideoSettings.captureSource === 2 ? addHostLayout.layoutChoice === 1 : addHostLayout.layoutChoice >= 2)
                 currentIndex: 9
                 model: addPcDialog.virtualModeChoices
                 delegate: ItemDelegate {
