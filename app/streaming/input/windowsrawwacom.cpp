@@ -67,7 +67,8 @@ std::string physicalDevice(const char* path)
 
 class WindowsRawWacomInput::Impl : public std::enable_shared_from_this<Impl> {
 public:
-    explicit Impl(std::function<void()> callback) : activity(std::move(callback)) {}
+    explicit Impl(std::function<void()> callback, std::function<bool()> before, std::function<void()> after)
+        : activity(std::move(callback)), beforeInput(std::move(before)), afterInput(std::move(after)) {}
     void start() { thread = std::thread([self = shared_from_this()] { self->run(); }); }
     ~Impl() { if (thread.joinable()) thread.detach(); }
     bool barrier(std::uint64_t ticket) {
@@ -120,7 +121,14 @@ public:
         std::vector<unsigned char> bytes(sizeof(h) + length);
         std::memcpy(bytes.data(), &h, sizeof(h));
         if (length) std::memcpy(bytes.data() + sizeof(h), payload, length);
-        return LiSendRawHidEvent(bytes.data(), static_cast<unsigned>(bytes.size())) == 0;
+        const bool guarded = type == PLANK_RAW_HID_INPUT && bool(beforeInput);
+        if (guarded && !beforeInput()) return false;
+        // Publish activity before releasing the shared BEGIN/enqueue boundary.
+        // A mouse capture cannot start in the gap after this report was sent.
+        if (type == PLANK_RAW_HID_INPUT) tabletActivity();
+        const bool sent = LiSendRawHidEvent(bytes.data(), static_cast<unsigned>(bytes.size())) == 0;
+        if (guarded && afterInput) afterInput();
+        return sent;
     }
     void release(bool unplug = false) {
         if (pending || attached) frame(unplug ? PLANK_RAW_HID_DETACH : PLANK_RAW_HID_SUSPEND);
@@ -307,7 +315,6 @@ public:
                             if (!length || !frame(PLANK_RAW_HID_INPUT, static_cast<std::uint16_t>(i), ++sequence, report, length)) {
                                 failed = true; break;
                             }
-                            tabletActivity();
                         }
                     }
                     if (failed) { release(true); retry = Clock::now() + std::chrono::seconds(2); }
@@ -334,11 +341,15 @@ public:
     Clock::time_point deadline{}, retry{};
     LinuxWacomReportWorker reports;
     std::mutex activityMutex;
+    std::function<bool()> beforeInput;
+    std::function<void()> afterInput;
     std::function<void()> activity;
     std::thread thread;
 };
-WindowsRawWacomInput::WindowsRawWacomInput(std::function<void()> activity)
-    : m_Impl(std::make_shared<Impl>(std::move(activity))) { m_Impl->start(); }
+WindowsRawWacomInput::WindowsRawWacomInput(std::function<void()> activity,
+                                         std::function<bool()> beforeInput,
+                                         std::function<void()> afterInput)
+    : m_Impl(std::make_shared<Impl>(std::move(activity), std::move(beforeInput), std::move(afterInput))) { m_Impl->start(); }
 WindowsRawWacomInput::~WindowsRawWacomInput() { m_Impl->shutdown(); }
 void WindowsRawWacomInput::setActive(bool active) {
     if (m_Impl->activeRequested.exchange(active) == active) return;

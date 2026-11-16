@@ -22,6 +22,8 @@ private slots:
         QTest::addColumn<unsigned>("action");
         QTest::newRow("disconnect") << int(SDL_SCANCODE_Q) << quint32(SDLK_Q) << unsigned(PlankSessionHotkeys::Disconnect);
         QTest::newRow("toolbar") << int(SDL_SCANCODE_T) << quint32(SDLK_T) << unsigned(PlankSessionHotkeys::ToggleToolbar);
+        QTest::newRow("immersive-mouse") << int(SDL_SCANCODE_M) << quint32(SDLK_M) << unsigned(PlankSessionHotkeys::ToggleImmersiveMouse);
+        QTest::newRow("non-latin-mouse") << int(SDL_SCANCODE_M) << quint32(0x043c) << unsigned(PlankSessionHotkeys::ToggleImmersiveMouse);
         QTest::newRow("non-latin-disconnect") << int(SDL_SCANCODE_Q) << quint32(0x0439) << unsigned(PlankSessionHotkeys::Disconnect);
         QTest::newRow("non-latin-toolbar") << int(SDL_SCANCODE_T) << quint32(0x0435) << unsigned(PlankSessionHotkeys::ToggleToolbar);
         QTest::newRow("logical-letter-wins") << int(SDL_SCANCODE_Q) << quint32(SDLK_T) << unsigned(PlankSessionHotkeys::ToggleToolbar);
@@ -92,6 +94,27 @@ private slots:
         QVERIFY(controls.handle(key(SDL_SCANCODE_T, SDLK_T, false)));
         QVERIFY(controls.handle(key(SDL_SCANCODE_T, SDLK_T)));
         QCOMPARE(controls.take(), PlankSessionHotkeys::None);
+    }
+    void mouseToggleIsLatchedWithoutRepeatsAndDisconnectStillWins()
+    {
+        PlankSessionHotkeys controls;
+        auto m=key(SDL_SCANCODE_M,SDLK_M);
+        QVERIFY(controls.handle(m));
+        m.repeat=true; QVERIFY(controls.handle(m));
+        QCOMPARE(controls.take(),PlankSessionHotkeys::ToggleImmersiveMouse);
+        QVERIFY(controls.handle(key(SDL_SCANCODE_M,SDLK_M,false,SDL_KMOD_NONE)));
+        QVERIFY(controls.handle(key(SDL_SCANCODE_M,SDLK_M)));
+        QVERIFY(controls.handle(key(SDL_SCANCODE_Q,SDLK_Q)));
+        QCOMPARE(controls.take(),PlankSessionHotkeys::Disconnect);
+    }
+    void independentToolbarAndMouseRequestsBothSurvive()
+    {
+        PlankSessionHotkeys controls;
+        QVERIFY(controls.handle(key(SDL_SCANCODE_M,SDLK_M)));
+        QVERIFY(controls.handle(key(SDL_SCANCODE_T,SDLK_T)));
+        const auto actions=controls.take();
+        QVERIFY(actions & PlankSessionHotkeys::ToggleToolbar);
+        QVERIFY(actions & PlankSessionHotkeys::ToggleImmersiveMouse);
     }
     void focusLossClearsConsumedKeysButKeepsRequestedExit()
     {

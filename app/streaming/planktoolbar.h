@@ -46,6 +46,7 @@ public:
     ~PlankToolbar();
 
     void setFileTransferState(bool supported, const QString& status);
+    void setImmersiveMouseState(bool available, bool enabled);
     void setRenderedStats(float fps, float videoMbps, float packetLossPercent,
                           std::uint32_t networkRttMs);
     void setAppliedBitrate(int requestedKbps, int appliedKbps, int peakKbps);
@@ -79,6 +80,7 @@ private:
         Handle,
         Slider,
         Pin,
+        ImmersiveMouse,
         Microphone,
         Camera,
         Files,
@@ -122,6 +124,7 @@ private:
     bool handleContains(int x, int y) const;
     bool pinContains(int x, int y) const;
     bool newConnectionContains(int x, int y) const;
+    bool immersiveMouseContains(int x, int y) const;
     bool filesContains(int x, int y) const;
     bool cameraContains(int x, int y) const;
     bool microphoneContains(int x, int y) const;
@@ -151,6 +154,7 @@ private:
     bool m_LocalPointerInteraction;
     bool m_BitrateSupported;
     bool m_FilesSupported = false;
+    bool m_ImmersiveMouseAvailable = false, m_ImmersiveMouseEnabled = false;
     QString m_FileTransferStatus;
     bool m_CameraSupported = false;
     PlankCamera::State m_CameraState = PlankCamera::State::Off;

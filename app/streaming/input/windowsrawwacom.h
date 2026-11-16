@@ -7,7 +7,9 @@
 class WindowsRawWacomInput
 {
 public:
-    explicit WindowsRawWacomInput(std::function<void()> tabletActivity);
+    explicit WindowsRawWacomInput(std::function<void()> tabletActivity,
+                                 std::function<bool()> beforeInput = {},
+                                 std::function<void()> afterInput = {});
     ~WindowsRawWacomInput();
     void setActive(bool active);
     void beginReconnect();

@@ -28,6 +28,7 @@
 #endif
 
 #include <QtGlobal>
+#include <chrono>
 #include <QDir>
 #include <QGuiApplication>
 #include <QtEndian>
@@ -84,6 +85,7 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs,
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
 
     // Populate special key combo configuration
+    initializeImmersiveMouse();
     m_SpecialKeyCombos[KeyComboUngrabInput].keyCombo = KeyComboUngrabInput;
     m_SpecialKeyCombos[KeyComboUngrabInput].keyCode = SDLK_Z;
     m_SpecialKeyCombos[KeyComboUngrabInput].scanCode = SDL_SCANCODE_Z;
@@ -143,6 +145,7 @@ bool SdlInputHandler::hasMacStreamKeyboardFocus() const
 
 void SdlInputHandler::setStreamDimensions(int streamWidth, int streamHeight)
 {
+    cancelImmersiveMouse();
     SDL_assert(streamWidth > 0);
     SDL_assert(streamHeight > 0);
     m_StreamDimensions.store(
@@ -161,6 +164,7 @@ QSize SdlInputHandler::streamDimensions() const
 
 SdlInputHandler::~SdlInputHandler()
 {
+    cancelImmersiveMouse();
     hideSharedPointer();
 #ifdef Q_OS_MACOS
     m_MacKeyboardCapture.reset();
@@ -202,6 +206,7 @@ SdlInputHandler::~SdlInputHandler()
 
 void SdlInputHandler::setWindow(SDL_Window *window)
 {
+    cancelImmersiveMouse();
     m_Window = window;
     m_LocalCursorSupported =
             (LiGetHostFeatureFlags() & LI_FF_LOCAL_CURSOR) != 0;
@@ -281,7 +286,20 @@ void SdlInputHandler::setWindow(SDL_Window *window)
             (LiGetHostFeatureFlags() &
              (LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND)) ==
             (LI_FF_RAW_HID_TABLET | LI_FF_RAW_HID_FOCUS_SUSPEND)) {
-        m_WindowsRawWacomInput.reset(new WindowsRawWacomInput(requestTabletCursor));
+        const auto bridge = m_PointerBridge;
+        m_WindowsRawWacomInput.reset(new WindowsRawWacomInput(requestTabletCursor,
+            [bridge] {
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+                for (;;) {
+                    bridge->wire.lock();
+                    if (!bridge->captured.load()) return true; // after-report hook unlocks.
+                    bridge->wire.unlock();
+                    bridge->tabletRequested.store(true);
+                    Session::postPointerCaptureEvent();
+                    std::unique_lock<std::mutex> state(bridge->state);
+                    if (!bridge->changed.wait_until(state, deadline, [&] { return !bridge->captured.load(); })) return false;
+                }
+            }, [bridge] { bridge->wire.unlock(); }));
         m_WindowsRawWacomInput->setActive(
             (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0);
     }
@@ -300,7 +318,8 @@ void SdlInputHandler::setWindow(SDL_Window *window)
             SDL_LogInfo(SDL_LOG_CATEGORY_INPUT,
                         "Using SDL3 pen events for PLANK normalized pen transport");
             m_SdlPenInput.reset(new PlankMacPenInput(
-                [](const PlankMacPenPacket& packet) {
+                [this](const PlankMacPenPacket& packet) {
+                    cancelImmersiveMouse();
                     LiSendPenEvent(packet.eventType, packet.toolType,
                                    packet.buttons, packet.x, packet.y,
                                    packet.pressureOrDistance,
@@ -323,6 +342,7 @@ void SdlInputHandler::setWindow(SDL_Window *window)
 void SdlInputHandler::setPresentationLayout(
         const PlankPresentationLayout& layout)
 {
+    cancelImmersiveMouse();
     hideSharedPointer();
     m_PresentationLayout = layout;
     if (m_PresentationLayout.outputs.isEmpty() && m_Window != nullptr) {
@@ -375,6 +395,7 @@ void SdlInputHandler::updateDecodedStreamDimensions(int frameWidth,
 void SdlInputHandler::notifyWindowGeometryChanged(SDL_Window* window,
                                                   const char* reason)
 {
+    cancelImmersiveMouse();
     PlankOutputGeometry geometry;
     if (window == nullptr || !outputGeometry(window, geometry)) {
         return;
@@ -541,6 +562,7 @@ void SdlInputHandler::applyPendingRemoteCursorPosition()
 
 void SdlInputHandler::applyPendingTabletCursorActivation()
 {
+    if (m_TabletCursorActivationPending.load()) cancelImmersiveMouse();
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
     refreshNormalizedPen();
 #endif
@@ -616,6 +638,8 @@ void SdlInputHandler::notifyMouseLeave()
 
 void SdlInputHandler::notifyFocusLost()
 {
+    cancelImmersiveMouse();
+    releaseMouseButtons();
     hideSharedPointer();
     m_SessionHotkeys.releaseKeys();
 #ifdef Q_OS_MACOS
@@ -719,6 +743,7 @@ void SdlInputHandler::handleRawHidControl(const unsigned char* data,
 
 void SdlInputHandler::beginRawHidReconnect()
 {
+    cancelImmersiveMouse();
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
     if (m_SdlPenInput) m_SdlPenInput->setActive(false);
 #endif
@@ -878,6 +903,7 @@ bool SdlInputHandler::isSystemKeyCaptureActive()
 
 void SdlInputHandler::setCaptureActive(bool active)
 {
+    if (!active) cancelImmersiveMouse();
     active = active && !m_ViewOnly;
     if (active) {
         setCursorVisible(m_LocalCursorSupported ?

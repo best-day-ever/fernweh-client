@@ -308,6 +308,7 @@ SOURCES += \
     streaming/input/input.cpp \
     streaming/input/keyboard.cpp \
     streaming/input/mouse.cpp \
+    streaming/input/sdlpointercapture.cpp \
     streaming/session.cpp \
     streaming/audio/microphone.cpp \
     streaming/camera/camera.cpp \
@@ -380,6 +381,7 @@ HEADERS += \
     backend/internetconnectivity.h \
     streaming/avsynccontroller.h \
     streaming/input/input.h \
+    streaming/input/immersivemouse.h \
     streaming/input/plankpointerlogic.h \
     streaming/input/plankmousemotion.h \
     streaming/session.h \

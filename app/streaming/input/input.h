@@ -7,6 +7,7 @@
 #include "streaming/planksessionhotkeys.h"
 #include "remotecursor.h"
 #include "streaming/planksharedpointer.h"
+#include "immersivemouse.h"
 #ifdef Q_OS_MACOS
 #include "macrawwacomfocus.h"
 #endif
@@ -18,6 +19,8 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include <condition_variable>
+#include <string>
 
 #ifdef HAVE_LIBINPUT_TABLET
 class LinuxWacomInput;
@@ -48,7 +51,16 @@ public:
     ~SdlInputHandler();
 
     void setWindow(SDL_Window* window);
-    void setViewOnly(bool viewOnly) { m_ViewOnly = viewOnly; }
+    void setViewOnly(bool viewOnly) { if (viewOnly) cancelImmersiveMouse(); m_ViewOnly = viewOnly; }
+
+    void setPointerCaptureSupported(bool supported);
+    bool immersiveMouseAvailable() const;
+    bool immersiveMouse() const { return m_ImmersiveMouse && m_ImmersiveMouse->enabled(); }
+    bool immersiveMouseOwnsPointer() const { return m_ImmersiveMouse && m_ImmersiveMouse->ownsPointer(); }
+    void toggleImmersiveMouse();
+    void cancelImmersiveMouse();
+    void pollImmersiveMouse();
+    void handlePointerCapture(const unsigned char* data, unsigned length);
 
     void setStreamDimensions(int streamWidth, int streamHeight);
 
@@ -138,6 +150,30 @@ public:
     void updatePointerRegionLock();
 
 private:
+    struct PointerBridge {
+        std::mutex wire, state;
+        std::condition_variable changed;
+        std::atomic_bool captured{false}, tabletRequested{false};
+    };
+    std::shared_ptr<PointerBridge> m_PointerBridge = std::make_shared<PointerBridge>();
+    std::unique_ptr<PlankImmersiveMouse> m_ImmersiveMouse;
+    bool m_PointerCaptureSupported = false;
+    SDL_Window* m_PointerWindow = nullptr;
+    Uint64 m_PointerDropBefore = 0;
+    QSet<int> m_MouseButtonsDown;
+    std::mutex m_PointerAckMutex;
+    std::vector<std::vector<unsigned char>> m_PointerAcks;
+    bool m_PointerAckOverflow = false;
+    struct PointerHint { const char* name; bool existed; std::string value; };
+    std::vector<PointerHint> m_PointerHints;
+    void initializeImmersiveMouse();
+    bool beginNativePointerCapture();
+    void finishNativePointerCapture(QPointF anchor, bool reanchor);
+    bool sendPointerAbsolute(QPointF position, QSize dimensions);
+    void sendMouseButton(int button, bool down);
+    void releaseMouseButtons();
+    void sendMouseWheel(float x, float y);
+    bool deferMouseKey(const SDL_KeyboardEvent& event);
 #ifdef Q_OS_MACOS
     std::unique_ptr<MacQuitShortcut> m_MacQuitShortcut;
     std::unique_ptr<MacKeyboardCapture> m_MacKeyboardCapture;

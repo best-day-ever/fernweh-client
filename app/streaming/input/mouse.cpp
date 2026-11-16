@@ -91,7 +91,7 @@ void SdlInputHandler::handleMouseButtonEvent(SDL_MouseButtonEvent* event)
         // Not capturing
         return;
     }
-    else if (!isMouseInVideoRegion(qRound(x), qRound(y),
+    else if (!immersiveMouseOwnsPointer() && !isMouseInVideoRegion(qRound(x), qRound(y),
                                    SDL_GetWindowID(window)) && event->down) {
         // Ignore button presses outside the video region, but allow button releases
         return;
@@ -124,7 +124,15 @@ void SdlInputHandler::handleMouseButtonEvent(SDL_MouseButtonEvent* event)
     // Button packets carry no coordinates. Reassert the SDL button event's
     // absolute position immediately before the button so a stale tablet or
     // coalesced motion sample cannot make the remote click land elsewhere.
-    const bool positioned = sendAbsoluteMousePosition(
+    const auto send = [this, button, down = event->down](QPointF anchor) {
+        if (!m_ImmersiveMouse->captured() &&
+                !sendPointerAbsolute(anchor, m_ImmersiveMouse->dimensions())) {
+            cancelImmersiveMouse(); LiNotifyPlankHostTermination(-1); return;
+        }
+        sendMouseButton(button, down);
+    };
+    if (m_ImmersiveMouse && m_ImmersiveMouse->defer(send)) return;
+    const bool positioned = immersiveMouseOwnsPointer() || sendAbsoluteMousePosition(
                 window, event->x, event->y, !event->down);
     if (event->down && !positioned) {
         if (m_MousePressFailureLogs++ < 3) {
@@ -134,14 +142,8 @@ void SdlInputHandler::handleMouseButtonEvent(SDL_MouseButtonEvent* event)
         return;
     }
 
-    if (LiSendMouseButtonEvent(event->down ?
-                                   BUTTON_ACTION_PRESS :
-                                   BUTTON_ACTION_RELEASE,
-                               button) != 0 && m_MousePressFailureLogs++ < 3) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                    "Remote mouse button could not be queued");
-    }
-    if (!event->down) {
+    sendMouseButton(button, event->down);
+    if (!event->down && !immersiveMouseOwnsPointer()) {
         // A captured drag can finish on the other output without another move.
         // Forward its release before transferring native window focus.
         followPointerFocus(window, 0);
@@ -173,8 +175,13 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event,
     }
 
     SDL_MouseMotionEvent motion = *event;
-    if (batchPendingEvents) PlankMouseMotion::coalescePending(motion);
+    if (batchPendingEvents && !immersiveMouseOwnsPointer()) PlankMouseMotion::coalescePending(motion);
+    if (m_PointerDropBefore && motion.timestamp <= m_PointerDropBefore) return;
     if (motion.xrel == 0 && motion.yrel == 0) return;
+    if (immersiveMouseOwnsPointer()) {
+        m_ImmersiveMouse->motion(QPointF(motion.xrel, motion.yrel));
+        return;
+    }
     // Keep SDL's fractional point coordinates for Retina input.
     float x = motion.x, y = motion.y;
 
@@ -316,7 +323,7 @@ void SdlInputHandler::handleMouseWheelEvent(SDL_MouseWheelEvent* event)
         return;
     }
 
-    if (!isMouseInVideoRegion(event->mouse_x, event->mouse_y,
+    if (!immersiveMouseOwnsPointer() && !isMouseInVideoRegion(event->mouse_x, event->mouse_y,
                               event->windowID)) {
         // Ignore scroll events outside the video region
         return;
@@ -324,25 +331,36 @@ void SdlInputHandler::handleMouseWheelEvent(SDL_MouseWheelEvent* event)
 
     // Scroll packets carry no position. Make idle handoff target the point
     // under this participant's pointer, just like a button press.
-    if (!sendAbsoluteMousePosition(window, event->mouse_x, event->mouse_y, false)) return;
-    if (event->y != 0.0f) {
+    if (m_ImmersiveMouse && m_ImmersiveMouse->defer([this, x = event->x, y = event->y](QPointF anchor) {
+        if (!m_ImmersiveMouse->captured() && !sendPointerAbsolute(anchor, m_ImmersiveMouse->dimensions())) {
+            cancelImmersiveMouse(); LiNotifyPlankHostTermination(-1); return;
+        }
+        sendMouseWheel(x, y);
+    })) return;
+    if (!immersiveMouseOwnsPointer() && !sendAbsoluteMousePosition(window, event->mouse_x, event->mouse_y, false)) return;
+    sendMouseWheel(event->x, event->y);
+}
+
+void SdlInputHandler::sendMouseWheel(float x, float y)
+{
+    if (y != 0.0f) {
 #ifdef Q_OS_DARWIN
         // HACK: Clamp the scroll values on macOS to prevent OS scroll acceleration
         // from generating wild scroll deltas when scrolling quickly.
-        event->y = SDL_clamp(event->y, -1.0f, 1.0f);
+        y = SDL_clamp(y, -1.0f, 1.0f);
 #endif
 
-        LiSendHighResScrollEvent((short)(event->y * 120)); // WHEEL_DELTA
+        LiSendHighResScrollEvent((short)(y * 120)); // WHEEL_DELTA
     }
 
-    if (event->x != 0.0f) {
+    if (x != 0.0f) {
 #ifdef Q_OS_DARWIN
         // HACK: Clamp the scroll values on macOS to prevent OS scroll acceleration
         // from generating wild scroll deltas when scrolling quickly.
-        event->x = SDL_clamp(event->x, -1.0f, 1.0f);
+        x = SDL_clamp(x, -1.0f, 1.0f);
 #endif
 
-        LiSendHighResHScrollEvent((short)(event->x * 120)); // WHEEL_DELTA
+        LiSendHighResHScrollEvent((short)(x * 120)); // WHEEL_DELTA
     }
 }
 

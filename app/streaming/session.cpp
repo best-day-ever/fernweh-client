@@ -96,6 +96,7 @@ using PlatformFileClipboard = MacFileClipboard;
 #define SDL_CODE_PLANK_DECODED_FRAME_SIZE 115
 #define SDL_CODE_PLANK_APPLY_SCREENS 116
 #define SDL_CODE_PLANK_COLLABORATION_PERMISSION 117
+#define SDL_CODE_PLANK_POINTER_CAPTURE 118
 
 #include <QtEndian>
 #include <QCoreApplication>
@@ -357,6 +358,16 @@ void Session::clRawHidControl(const unsigned char* data, unsigned int length)
     s_ActiveSession->m_InputCallbacks.invoke([&](SdlInputHandler& input) {
         input.handleRawHidControl(data, length);
     });
+#endif
+}
+
+void Session::postPointerCaptureEvent()
+{
+#ifndef PLANK_QT_SESSION
+    SDL_Event event {};
+    event.type = SDL_EVENT_USER;
+    event.user.code = SDL_CODE_PLANK_POINTER_CAPTURE;
+    SDL_PushEvent(&event);
 #endif
 }
 
@@ -1638,6 +1649,10 @@ void Session::plankTransportDataReceiveLoop()
         case PLANK_TRANSPORT_EVENT_POINTER_CAPTURE:
 #ifdef PLANK_QT_SESSION
             m_QtInputCallbacks.invoke([&](QtSessionInput& input) {
+                input.handlePointerCapture(event.payload, event.payload_size);
+            });
+#else
+            m_InputCallbacks.invoke([&](SdlInputHandler& input) {
                 input.handlePointerCapture(event.payload, event.payload_size);
             });
 #endif
@@ -5718,6 +5733,8 @@ void Session::execInternal()
     m_InputHandler->setViewOnly(m_CollaborationPermission.load() == PlankCollaboration::View);
     m_InputHandler->setStreamDimensions(m_StreamConfig.width, m_StreamConfig.height);
     m_InputHandler->setWindow(m_Window);
+    m_InputHandler->setPointerCaptureSupported(!isCollaborator() &&
+                (m_PlankLaunchFeatureFlags & NvOutputTopology::PointerCaptureFeature));
     rebuildPresentationLayout();
     // The monitor set this stream presents, to tell a rearrangement from new screens.
     {
@@ -5841,6 +5858,9 @@ void Session::execInternal()
     Uint64 reconnectDecisionDeadline = 0;
     const auto handlePlankLocalUserEvent = [this](const SDL_UserEvent& userEvent) {
         switch (userEvent.code) {
+        case SDL_CODE_PLANK_POINTER_CAPTURE:
+            if (m_InputHandler) m_InputHandler->pollImmersiveMouse();
+            return true;
         case SDL_CODE_PLANK_BITRATE_APPLIED:
             if (m_PlankToolbar) {
                 m_PlankToolbar->setAppliedBitrate(
@@ -5905,13 +5925,17 @@ void Session::execInternal()
             m_Diagnostics.end(SessionDiagnostics::End::ThreadInterrupted);
             goto DispatchDeferredCleanup;
         }
+        m_InputHandler->pollImmersiveMouse();
+        if (m_PlankToolbar) m_PlankToolbar->setImmersiveMouseState(
+                    m_InputHandler->immersiveMouseAvailable(), m_InputHandler->immersiveMouse());
         const auto localHotkey = m_InputHandler->takeSessionHotkey();
         if (localHotkey == PlankSessionHotkeys::Disconnect) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Reserved local disconnect hotkey");
             m_Diagnostics.end(SessionDiagnostics::End::Hotkey);
             goto DispatchDeferredCleanup;
         }
-        if (localHotkey == PlankSessionHotkeys::ToggleToolbar) togglePlankToolbar();
+        if (localHotkey & PlankSessionHotkeys::ToggleToolbar) togglePlankToolbar();
+        if (localHotkey & PlankSessionHotkeys::ToggleImmersiveMouse) m_InputHandler->toggleImmersiveMouse();
 #ifdef Q_OS_MACOS
         if (m_ApplicationExitRequested.load()) {
             m_Diagnostics.end(SessionDiagnostics::End::ApplicationExit);
@@ -6046,6 +6070,7 @@ void Session::execInternal()
         int eventWaitTimeout = m_Reconnecting.load() ? 50 :
                     (m_PlankToolbar ?
                          m_PlankToolbar->eventWaitTimeout() : 1000);
+        if (m_InputHandler->immersiveMouseOwnsPointer()) eventWaitTimeout = std::min(eventWaitTimeout, 50);
         if (m_ThreadedExec) eventWaitTimeout = std::min(eventWaitTimeout, 50);
 #ifdef Q_OS_MACOS
         // Native Quit and reserved hotkeys change explicit session state,
@@ -6082,7 +6107,8 @@ void Session::execInternal()
             m_Diagnostics.end(SessionDiagnostics::End::Hotkey);
             goto DispatchDeferredCleanup;
         }
-        if (nativeHotkey == PlankSessionHotkeys::ToggleToolbar) togglePlankToolbar();
+        if (nativeHotkey & PlankSessionHotkeys::ToggleToolbar) togglePlankToolbar();
+        if (nativeHotkey & PlankSessionHotkeys::ToggleImmersiveMouse) m_InputHandler->toggleImmersiveMouse();
         // Handle Close before reconnect's presentation-only event drain. SDL
         // does not synthesize Quit while another stream window is visible.
         if (PlankSessionEvents::closeRequestsDisconnect(event,
@@ -6631,7 +6657,7 @@ void Session::execInternal()
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP:
-            if (m_PlankToolbar &&
+            if (!m_InputHandler->immersiveMouseOwnsPointer() && m_PlankToolbar &&
                     event.button.windowID == SDL_GetWindowID(m_Window)) {
                 const auto action = m_PlankToolbar->handleMouseButton(event.button);
 #if defined(Q_OS_MACOS) && defined(PLANK_TRANSPORT)
@@ -6695,7 +6721,7 @@ void Session::execInternal()
         case SDL_EVENT_MOUSE_MOTION:
         {
             bool toolbarConsumedMotion = false;
-            if (m_PlankToolbar &&
+            if (!m_InputHandler->immersiveMouseOwnsPointer() && m_PlankToolbar &&
                     event.motion.windowID == SDL_GetWindowID(m_Window)) {
                 // The ordinary input path batches queued motion for efficient
                 // transport. Aggregate it here when the toolbar is present so
@@ -6717,7 +6743,7 @@ void Session::execInternal()
             break;
         }
         case SDL_EVENT_MOUSE_WHEEL:
-            if (m_PlankToolbar &&
+            if (!m_InputHandler->immersiveMouseOwnsPointer() && m_PlankToolbar &&
                     event.wheel.windowID == SDL_GetWindowID(m_Window) &&
                     m_PlankToolbar->handleMouseWheel(event.wheel)) {
                 break;

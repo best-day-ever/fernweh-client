@@ -20,6 +20,7 @@
 
 void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
 {
+    cancelImmersiveMouse();
     switch (combo) {
     case KeyComboUngrabInput:
         if (m_ImmersiveKeyboardMode) {
@@ -155,7 +156,11 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
     if (m_MacKeyboardCapture->suppressSdlKeyEvent() || !hasMacStreamKeyboardFocus()) return;
 #endif
     if (m_SessionHotkeys.handle(*event)) {
-        if (event->down && !event->repeat) raiseAllKeys();
+        if (event->down && !event->repeat &&
+                PlankSessionHotkeys::resolve(*event) != PlankSessionHotkeys::ToggleImmersiveMouse) {
+            cancelImmersiveMouse();
+            raiseAllKeys();
+        }
         return;
     }
     short keyCode;
@@ -221,6 +226,7 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
         }
     }
 
+    if (deferMouseKey(*event)) return;
     if (m_ViewOnly) return;
 
     // Set modifier flags
