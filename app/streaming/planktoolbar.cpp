@@ -26,6 +26,7 @@
 namespace {
 constexpr int ToolbarHeight = 39;
 constexpr int MicrophoneWidth = 34;
+constexpr int ImmersiveMouseWidth = 54;
 // The "screens changed" strip below the toolbar row.
 constexpr int ScreensPromptHeight = 36;
 constexpr int CameraWidth = 34;
@@ -386,6 +387,7 @@ void PlankToolbar::notifyWindowChanged()
                       (m_MicrophoneSupported ? MicrophoneWidth : 0) +
                       (m_CameraSupported ? CameraWidth : 0) +
                       (m_FilesSupported ? FilesWidth : 0) +
+                      (m_ImmersiveMouseAvailable ? ImmersiveMouseWidth : 0) +
                       PlankToolbarStats::WindowControlsWidth,
                       std::max(m_WindowWidth, 1));
     if (m_ToolbarLeft < 0) {
@@ -634,6 +636,11 @@ PlankToolbar::Action PlankToolbar::handlePointerButton(
     Action action = Action::Consumed;
     if (pressedControl == releasedControl) {
         switch (pressedControl) {
+        case Control::ImmersiveMouse:
+            endLocalPointerInteraction();
+            m_InputHandler.toggleImmersiveMouse();
+            setImmersiveMouseState(m_InputHandler.immersiveMouseAvailable(), m_InputHandler.immersiveMouse());
+            break;
         case Control::Pin:
             m_Pinned = !m_Pinned;
             m_Preferences.plankToolbarPinned = m_Pinned;
@@ -851,6 +858,17 @@ void PlankToolbar::redraw()
     labelFont.setWeight(QFont::DemiBold);
     painter.setFont(labelFont);
     painter.setPen(QColor(235, 239, 244));
+
+    if (m_ImmersiveMouseAvailable) {
+        const int right = m_Width - 105 - NewConnectionWidth -
+                (m_MicrophoneSupported ? MicrophoneWidth : 0) -
+                (m_CameraSupported ? CameraWidth : 0) - (m_FilesSupported ? FilesWidth : 0);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(m_ImmersiveMouseEnabled ? QColor(38, 107, 72) : QColor(48, 57, 68));
+        painter.drawRoundedRect(QRectF(right - ImmersiveMouseWidth + 3, 6, ImmersiveMouseWidth - 6, 27), 4, 4);
+        painter.setPen(QColor(238, 242, 247));
+        painter.drawText(QRectF(right - ImmersiveMouseWidth, 6, ImmersiveMouseWidth, 27), Qt::AlignCenter, "Mouse");
+    }
 
     // Six-dot grip for moving the toolbar horizontally along the top edge.
     const bool handleHovered = m_LocalPointerInteraction &&
@@ -1177,11 +1195,12 @@ void PlankToolbar::redraw()
         painter.setPen(QColor(246, 248, 250));
         painter.drawText(QRectF(right - FilesWidth, 6, FilesWidth, 27), Qt::AlignCenter, "Files…");
     }
-    if (!m_FileTransferStatus.isEmpty()) {
+    if (!m_FileTransferStatus.isEmpty() || m_ImmersiveMouseEnabled) {
         painter.setFont(labelFont);
         painter.setPen(QColor(235, 239, 244));
         painter.drawText(QRect(10, toolbarHeight() - FileStatusHeight, m_Width - 20, FileStatusHeight),
-                         Qt::AlignLeft | Qt::AlignVCenter, m_FileTransferStatus);
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         m_ImmersiveMouseEnabled ? QStringLiteral("Immersive mouse · Ctrl+Alt+Shift+M to release") : m_FileTransferStatus);
     }
     painter.end();
     m_LastDrawnFps = m_RenderedFps;
@@ -1528,7 +1547,7 @@ bool PlankToolbar::contains(int x, int y) const
 int PlankToolbar::toolbarHeight() const
 {
     return ToolbarHeight + (m_ScreensPromptVisible ? ScreensPromptHeight : 0) +
-            (m_FileTransferStatus.isEmpty() ? 0 : FileStatusHeight);
+            (m_FileTransferStatus.isEmpty() && !m_ImmersiveMouseEnabled ? 0 : FileStatusHeight);
 }
 
 // Toolbar-local rectangles of the prompt's buttons, right to left:
@@ -1597,6 +1616,26 @@ bool PlankToolbar::newConnectionContains(int x, int y) const
     return x >= right - NewConnectionWidth && x < right && y >= 2 && y <= 37;
 }
 
+void PlankToolbar::setImmersiveMouseState(bool available, bool enabled)
+{
+    if (available == m_ImmersiveMouseAvailable && enabled == m_ImmersiveMouseEnabled) return;
+    const bool enabling = enabled && !m_ImmersiveMouseEnabled;
+    m_ImmersiveMouseAvailable = available;
+    m_ImmersiveMouseEnabled = enabled;
+    if (enabled) endLocalPointerInteraction();
+    notifyWindowChanged();
+    if (enabling) show(SDL_GetTicks());
+    redraw();
+}
+
+bool PlankToolbar::immersiveMouseContains(int x, int y) const
+{
+    const int right = toolbarLeft() + m_Width - 105 - NewConnectionWidth -
+            (m_MicrophoneSupported ? MicrophoneWidth : 0) -
+            (m_CameraSupported ? CameraWidth : 0) - (m_FilesSupported ? FilesWidth : 0);
+    return m_ImmersiveMouseAvailable && x >= right - ImmersiveMouseWidth && x < right && y >= 2 && y <= 37;
+}
+
 bool PlankToolbar::filesContains(int x, int y) const
 {
     const int right = toolbarLeft() + m_Width - 105 -
@@ -1655,6 +1694,7 @@ PlankToolbar::Control PlankToolbar::controlAt(int x, int y) const
     if (fullscreenContains(x, y)) {
         return Control::Fullscreen;
     }
+    if (immersiveMouseContains(x, y)) return Control::ImmersiveMouse;
     if (newConnectionContains(x, y)) return Control::NewConnection;
     if (filesContains(x, y)) return Control::Files;
     if (cameraContains(x, y)) return Control::Camera;
@@ -1687,5 +1727,6 @@ int PlankToolbar::sliderRight() const
                                    m_Width - PlankToolbarStats::WindowControlsWidth - NewConnectionWidth -
                                    (m_MicrophoneSupported ? MicrophoneWidth : 0) -
                                    (m_CameraSupported ? CameraWidth : 0) -
-                                   (m_FilesSupported ? FilesWidth : 0));
+                                   (m_FilesSupported ? FilesWidth : 0) -
+                                   (m_ImmersiveMouseAvailable ? ImmersiveMouseWidth : 0));
 }

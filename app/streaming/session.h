@@ -201,6 +201,7 @@ public:
     void flushWindowEvents();
 
     static void postTabletCursorActivationEvent();
+    static void postPointerCaptureEvent();
 
     // Called by the decoder thread when the size of the decoded frames
     // changes; input is re-pointed at that size on the main thread.
