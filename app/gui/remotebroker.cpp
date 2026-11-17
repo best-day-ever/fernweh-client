@@ -782,10 +782,14 @@ NvComputer* prepareBrokeredComputer(const PlankBroker::Lease& lease, const QStri
                 }
             }
         }
-        if (!macHost && topology.displayArrangementPublished()) {
-            // Cached so the display setup can preview this workstation.
-            capabilities.displayCapabilities = QString::fromUtf8(
-                        QJsonDocument(topology.displayCapabilities.toJson()).toJson(QJsonDocument::Compact));
+        if (!macHost) {
+            // Cache one authenticated snapshot, not flags read before sign-in
+            // alongside a newer display description.
+            capabilities.featureFlags = topology.featureFlags;
+            if (topology.displayArrangementPublished()) {
+                capabilities.displayCapabilities = QString::fromUtf8(
+                            QJsonDocument(topology.displayCapabilities.toJson()).toJson(QJsonDocument::Compact));
+            }
         }
     }
     const QVector<NvApp> apps = http.getAppList();
