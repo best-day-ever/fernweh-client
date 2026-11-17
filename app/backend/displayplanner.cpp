@@ -160,10 +160,10 @@ QString badgeFor(const Output& output)
 QVector<SizeOption> sizeOptions(const Output& output, const DisplayArrangement::Capabilities& caps)
 {
     QVector<SizeOption> options;
-    options.append({QStringLiteral("exact"), tr("%1 (pixel-exact)").arg(sizeLabel(output.exactSize)),
+    options.append({QStringLiteral("exact"), tr("More space · %1").arg(sizeLabel(output.exactSize)),
                     output.exactSize});
     if (output.looksLikeSize.isValid()) {
-        options.append({QStringLiteral("looks-like"), tr("Looks like %1").arg(sizeLabel(output.looksLikeSize)),
+        options.append({QStringLiteral("looks-like"), tr("Larger text · %1").arg(sizeLabel(output.looksLikeSize)),
                         output.looksLikeSize});
     }
     QVector<QSize> presets;
@@ -174,7 +174,7 @@ QVector<SizeOption> sizeOptions(const Output& output, const DisplayArrangement::
     }
     for (const QSize& mode : std::as_const(presets)) {
         options.append({QStringLiteral("preset:%1x%2").arg(mode.width()).arg(mode.height()),
-                        tr("%1 (workstation screen mode)").arg(sizeLabel(mode)), mode});
+                        sizeLabel(mode), mode});
     }
     options.append({QStringLiteral("custom"), tr("Custom…"), QSize()});
     return options;

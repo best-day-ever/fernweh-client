@@ -1,3 +1,12 @@
+## 1.2.41 — Clearer display setup
+
+- Start with simple desktop-size choices, including Larger text for high-resolution screens.
+- Preview the desktop size and viewer behavior for the next connection.
+- Keep exact dimensions, placement and output choices in Advanced.
+- Apply all dimension edits with Save, and show invalid values without discarding them.
+- Show one applicable editor and one Save action for older workstations and remote Macs.
+- Preserve existing saved layouts and preferences.
+
 ## 1.2.40 — Saved workstation display setup
 
 - Keep the correct display controls when reopening a saved workstation.

@@ -4,9 +4,8 @@ import QtQuick.Layouts 1.3
 
 import DisplaySetup 1.0
 
-// The display setup at a glance: this computer's monitors on the left, the
-// workstation desktop they become on the right, then one row per monitor
-// (on/off, primary, size) and the planner's warnings with their actions.
+// Basic display setup: local screens, the remote desktop they become,
+// per-screen desktop sizes and any limits the connection must respect.
 // Everything comes from the DisplaySetup singleton (DisplayPlanner); this
 // view only shows it and forwards choices.
 ColumnLayout {
@@ -16,24 +15,14 @@ ColumnLayout {
     property bool compact: false
     // Read-only summary (Settings): no rows or actions.
     property bool readOnly: false
+    property bool showSummary: true
+    property bool allowAdvanced: false
+    signal advancedRequested()
 
     spacing: theme.spaceMedium
 
     PlankTheme {
         id: theme
-    }
-
-    function backingColor(backing) {
-        if (backing === "physical") return theme.success
-        if (backing === "physical-viewport") return theme.warning
-        if (backing === "virtual") return theme.accent
-        return theme.textDisabled
-    }
-
-    function badgeColor(badge) {
-        if (badge === "scaled" || badge === "closest") return theme.warning
-        if (badge === "exact") return theme.success
-        return theme.textSecondary
     }
 
     RowLayout {
@@ -201,11 +190,11 @@ ColumnLayout {
                         width: Math.max(8, modelData.width * hostArea.scale - 2)
                         height: Math.max(8, modelData.height * hostArea.scale - 2)
                         radius: theme.radiusSmall
-                        color: Qt.rgba(panel.backingColor(modelData.backing).r,
-                                       panel.backingColor(modelData.backing).g,
-                                       panel.backingColor(modelData.backing).b, 0.22)
+                        color: Qt.rgba(theme.accent.r,
+                                       theme.accent.g,
+                                       theme.accent.b, 0.22)
                         border.width: modelData.primary ? 2 : 1
-                        border.color: panel.backingColor(modelData.backing)
+                        border.color: theme.accent
 
                         Column {
                             anchors.centerIn: parent
@@ -222,7 +211,7 @@ ColumnLayout {
                             }
                             Label {
                                 width: parent.width
-                                text: modelData.backingText
+                                text: modelData.primary ? qsTr("Primary display") : ""
                                 color: theme.textSecondary
                                 font.pointSize: 8
                                 horizontalAlignment: Text.AlignHCenter
@@ -245,51 +234,19 @@ ColumnLayout {
         }
     }
 
-    // Legend: what backs each workstation display. It wraps, so a narrow
-    // panel (the first sign-in wizard) never grows wider than its card.
-    Flow {
-        Layout.fillWidth: true
-        spacing: theme.spaceLarge
-        visible: DisplaySetup.hostKind !== "legacy" && DisplaySetup.hostKind !== "mac"
-
-        Repeater {
-            model: [
-                {"backing": "physical", "text": qsTr("Workstation screen (its own output)")},
-                {"backing": "virtual", "text": qsTr("Virtual display, exact size")},
-                {"backing": "physical-viewport", "text": qsTr("Workstation screen, scaled")}
-            ]
-            delegate: Row {
-                spacing: 6
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 10
-                    height: 10
-                    radius: 2
-                    color: panel.backingColor(modelData.backing)
-                }
-                Label {
-                    text: modelData.text
-                    color: theme.textSecondary
-                    font.pointSize: 9
-                }
-            }
-        }
-        Label {
-            visible: DisplaySetup.backingExpected
-            text: qsTr("Expected; the workstation decides when you connect")
-            color: theme.textDisabled
-            font.pointSize: 9
-            font.italic: true
-        }
-    }
-
     Label {
         Layout.fillWidth: true
-        visible: DisplaySetup.hostKind === "legacy"
-        text: qsTr("This workstation's BDE fernweh only knows one screen or two side by side, from a fixed list of sizes.")
+        visible: !panel.readOnly
+        text: qsTr("Desktop size")
+        color: theme.textPrimary
+        font.weight: Font.DemiBold
+    }
+    Label {
+        Layout.fillWidth: true
+        visible: !panel.readOnly
+        text: qsTr("Choose how much workspace you want on each screen. A smaller desktop makes text and controls larger when fitted to your screen.")
         color: theme.textSecondary
         wrapMode: Text.Wrap
-        font.pointSize: 10
     }
 
     // ------------------------------------------------------ per-monitor rows
@@ -301,7 +258,6 @@ ColumnLayout {
             Layout.fillWidth: true
             spacing: 4
 
-            property bool editingCustom: false
 
             RowLayout {
                 Layout.fillWidth: true
@@ -341,7 +297,7 @@ ColumnLayout {
                         Layout.fillWidth: true
                     }
                     Label {
-                        text: modelData.on ? (modelData.included ? modelData.backingText : qsTr("Not shown (too many screens)")) :
+                        text: modelData.on ? (modelData.included ? qsTr("Remote desktop: %1").arg(modelData.sizeText) : qsTr("Not shown (too many screens)")) :
                                              qsTr("Stays local")
                         color: theme.textSecondary
                         font.pointSize: 9
@@ -353,80 +309,38 @@ ColumnLayout {
                 PlankComboBox {
                     id: sizeBox
                     enabled: modelData.on && DisplaySetup.hostKind !== "legacy" && DisplaySetup.hostKind !== "mac"
-                    Layout.preferredWidth: 250
-                    model: modelData.sizeOptions.map(function(option) { return option.label })
-                    currentIndex: modelData.sizeIndex
+                    Layout.preferredWidth: 310
+                    Accessible.name: qsTr("Desktop size for %1").arg(modelData.name)
+                    model: (panel.allowAdvanced ? modelData.sizeOptions : modelData.sizeOptions.filter(function(option) { return option.value !== "custom" || modelData.sizeChoice.indexOf("custom:") === 0 })).map(function(option) { return option.label })
+                    currentIndex: Math.min(modelData.sizeIndex, count - 1)
                     onActivated: function(index) {
                         var option = modelData.sizeOptions[index]
                         if (option.value === "custom") {
-                            row.editingCustom = true
-                            customWidth.text = String(modelData.width || 1920)
-                            customHeight.text = String(modelData.height || 1080)
-                            customWidth.forceActiveFocus()
+                            currentIndex = modelData.sizeIndex
+                            panel.advancedRequested()
                         } else {
-                            row.editingCustom = false
                             DisplaySetup.setSize(modelData.key, option.value)
                         }
                     }
                 }
 
-                Label {
-                    text: modelData.badgeText
-                    visible: modelData.included && text !== ""
-                    color: panel.badgeColor(modelData.badge)
-                    font.pointSize: 9
-                    Layout.preferredWidth: 90
-                }
+
             }
 
-            RowLayout {
-                visible: row.editingCustom
+            Label {
+                Layout.fillWidth: true
                 Layout.leftMargin: 66
-                spacing: theme.spaceSmall
-
-                PlankTextField {
-                    id: customWidth
-                    Layout.preferredWidth: 90
-                    validator: IntValidator { bottom: 2; top: 16384 }
-                    inputMethodHints: Qt.ImhDigitsOnly
+                visible: modelData.on && modelData.included
+                text: {
+                    if (modelData.sizeChoice === "looks-like")
+                        return qsTr("Recommended for easier reading on a high-resolution screen. Less workspace; fine details may look softer.")
+                    if (modelData.highDpi && modelData.sizeChoice === "exact")
+                        return qsTr("Most workspace and finest detail. Text can look very small on a high-resolution screen; choose Larger text for easier reading.")
+                    return qsTr("The workstation will use this desktop size when you connect. A different screen shape can leave black borders.")
                 }
-                Label {
-                    text: "×"
-                    color: theme.textSecondary
-                }
-                PlankTextField {
-                    id: customHeight
-                    Layout.preferredWidth: 90
-                    validator: IntValidator { bottom: 2; top: 16384 }
-                    inputMethodHints: Qt.ImhDigitsOnly
-                    Keys.onReturnPressed: customApply.clicked()
-                    Keys.onEnterPressed: customApply.clicked()
-                }
-                Button {
-                    id: customApply
-                    text: qsTr("Set size")
-                    onClicked: {
-                        if (DisplaySetup.setCustomSize(modelData.key, parseInt(customWidth.text), parseInt(customHeight.text))) {
-                            row.editingCustom = false
-                            customError.text = ""
-                        } else {
-                            customError.text = qsTr("Use an even size the workstation supports.")
-                        }
-                    }
-                }
-                Button {
-                    text: qsTr("Cancel")
-                    flat: true
-                    onClicked: {
-                        row.editingCustom = false
-                        customError.text = ""
-                    }
-                }
-                Label {
-                    id: customError
-                    color: theme.warning
-                    font.pointSize: 9
-                }
+                color: theme.textSecondary
+                wrapMode: Text.Wrap
+                font.pointSize: 10
             }
         }
     }
@@ -469,6 +383,7 @@ ColumnLayout {
 
     Label {
         Layout.fillWidth: true
+        visible: panel.showSummary
         text: DisplaySetup.summary
         color: DisplaySetup.planOk ? theme.textSecondary : theme.warning
         wrapMode: Text.Wrap

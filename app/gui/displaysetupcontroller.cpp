@@ -12,6 +12,7 @@
 #include "streaming/video/decodercaps.h"
 #endif
 
+#include <cmath>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
@@ -228,6 +229,60 @@ bool DisplaySetupController::setCustomSize(const QString& key, int width, int he
     return true;
 }
 
+bool DisplaySetupController::applyGeometry(const QVariantList& edits)
+{
+    const auto caps = m_Host.capabilities.valid ? m_Host.capabilities : DisplayArrangement::Capabilities::fleetDefault();
+    // Validate the complete form before changing anything. Invalid fields must
+    // neither disappear nor partially overwrite a saved layout.
+    for (const QVariant& value : edits) {
+        const auto edit = value.toMap();
+        const auto* output = planned(edit.value(QStringLiteral("key")).toString());
+        if (!output || !output->included) continue;
+        for (const QString& name : {QStringLiteral("width"), QStringLiteral("height"), QStringLiteral("x"), QStringLiteral("y")}) {
+            bool ok = false;
+            const double number = edit.value(name).toDouble(&ok);
+            if (!ok || !std::isfinite(number) || number < -16384 || number > 16384 ||
+                    number != int(number) || int(number) % 2 != 0) return false;
+        }
+        const int width = edit.value(QStringLiteral("width")).toInt();
+        const int height = edit.value(QStringLiteral("height")).toInt();
+        if (width < caps.minOutput.width() || height < caps.minOutput.height() ||
+                width > caps.maxOutput.width() || height > caps.maxOutput.height() ||
+                qint64(width) * height > caps.maxPixels) return false;
+    }
+    bool changedGeometry = false;
+    for (const QVariant& value : edits) {
+        const auto edit = value.toMap();
+        const QString key = edit.value(QStringLiteral("key")).toString();
+        const auto* output = planned(key);
+        if (!output || !output->included) continue;
+        const QSize size(edit.value(QStringLiteral("width")).toInt(), edit.value(QStringLiteral("height")).toInt());
+        const QPoint position(edit.value(QStringLiteral("x")).toInt(), edit.value(QStringLiteral("y")).toInt());
+        if (size != output->size) {
+            auto& choice = m_Profile.choice(key);
+            choice.size = DisplayProfile::SizeMode::Custom;
+            choice.fixedSize = size;
+            changedGeometry = true;
+        }
+        if (position != output->position) {
+            if (!m_Profile.manual) {
+                for (const auto& item : std::as_const(m_Plan.outputs)) {
+                    auto& choice = m_Profile.choice(item.key);
+                    choice.hasPosition = true;
+                    choice.position = item.position;
+                }
+                m_Profile.manual = true;
+            }
+            auto& choice = m_Profile.choice(key);
+            choice.hasPosition = true;
+            choice.position = position;
+            changedGeometry = true;
+        }
+    }
+    if (changedGeometry) replan();
+    return true;
+}
+
 void DisplaySetupController::setPreference(const QString& key, const QString& preference)
 {
     DisplayArrangement::Preference parsed;
@@ -366,6 +421,8 @@ bool DisplaySetupController::useFixedLayout(const QString& hostId, int layoutCho
                                             const QString& virtualMode2, int scalingChoice)
 {
     if (!PlankBroker::isHostId(hostId)) return false;
+    const auto host = hostInfo(hostId);
+    if (!host.isMac() && !(host.isLinux() && !host.supportsArrangement())) return false;
     RemoteDisplaySetup::Setup setup;
     setup.hostLayout = RemoteDisplaySetup::layoutForChoice(layoutChoice);
     setup.virtualMode1 = virtualMode1;
@@ -532,6 +589,7 @@ QVariantList DisplaySetupController::monitors() const
             {QStringLiteral("clientWidth"), output.clientBounds.width()},
             {QStringLiteral("clientHeight"), output.clientBounds.height()},
             {QStringLiteral("exactText"), sizeText(output.exactSize)},
+            {QStringLiteral("highDpi"), output.looksLikeSize.isValid()},
             {QStringLiteral("x"), output.position.x()},
             {QStringLiteral("y"), output.position.y()},
             {QStringLiteral("width"), output.size.width()},

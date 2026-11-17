@@ -22,6 +22,9 @@ NavigableDialog {
     property bool connectAfter: false
     // 0: the overview, 1: the manual setup.
     property int page: 0
+    property bool saved: false
+    property string saveError: ""
+    readonly property bool compatibility: dialog.hostId !== "" && DisplaySetup.fixedLayoutRequired
     // A running stream that asked for the setup (screens changed): saving
     // applies the layout to it, and the launcher hides again either way.
     property var session: null
@@ -41,7 +44,12 @@ NavigableDialog {
         dialog.reason = reason || ""
         dialog.connectAfter = connectAfter === true
         dialog.page = page || 0
+        dialog.saved = false
+        dialog.saveError = ""
+        advancedPage.pending = false
+        advancedPage.error = ""
         DisplaySetup.begin(dialog.hostId, dialog.hostName, dialog.reason)
+        compatibilityPage.reload()
         dialog.open()
     }
 
@@ -66,9 +74,20 @@ NavigableDialog {
     }
 
     function save() {
-        if (!DisplaySetup.accept()) {
-            return
+        dialog.saveError = ""
+        if (dialog.compatibility) {
+            if (!compatibilityPage.save()) {
+                dialog.saveError = qsTr("The display setup could not be saved. Check the desktop size and try again.")
+                return
+            }
+        } else {
+            if (dialog.page === 1 && !advancedPage.commit()) return
+            if (!DisplaySetup.accept()) {
+                dialog.saveError = qsTr("The display setup could not be saved. Check the preview and try again.")
+                return
+            }
         }
+        dialog.saved = true
         returnToStream(true)
         dialog.close()
         if (dialog.connectAfter && dialog.hostId !== "") {
@@ -79,7 +98,10 @@ NavigableDialog {
     }
 
     // Escape, or any other way out, while a stream waits: back to it.
-    onClosed: returnToStream(false)
+    onClosed: {
+        if (!dialog.saved) DisplaySetup.cancel()
+        returnToStream(false)
+    }
 
     Connections {
         target: DisplaySetup
@@ -130,8 +152,8 @@ NavigableDialog {
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.preferredHeight: dialog.page === 0 ? overviewPanel.implicitHeight : advancedPage.implicitHeight
-            currentIndex: dialog.page
+            Layout.preferredHeight: dialog.compatibility ? compatibilityPage.implicitHeight : dialog.page === 0 ? overviewPanel.implicitHeight : advancedPage.implicitHeight
+            currentIndex: dialog.compatibility ? 2 : dialog.page
 
             ScrollView {
                 id: overviewScroll
@@ -141,6 +163,9 @@ NavigableDialog {
                 DisplaySetupPanel {
                     id: overviewPanel
                     width: overviewScroll.availableWidth
+                    showSummary: false
+                    allowAdvanced: true
+                    onAdvancedRequested: dialog.page = 1
                 }
             }
 
@@ -154,14 +179,17 @@ NavigableDialog {
                     width: advancedScroll.availableWidth
                     hostId: dialog.hostId
                     hostName: dialog.hostName
-                    onFixedLayoutSaved: {
-                        dialog.close()
-                        if (dialog.connectAfter && dialog.hostId !== "") {
-                // @fernweh-broker-begin
-            RemoteBroker.connectToHost(dialog.hostId)
-// @fernweh-broker-end
-                        }
-                    }
+
+                }
+            }
+            ScrollView {
+                id: compatibilityScroll
+                clip: true
+                contentWidth: availableWidth
+                DisplayCompatibilityPage {
+                    id: compatibilityPage
+                    width: compatibilityScroll.availableWidth
+                    hostId: dialog.hostId
                 }
             }
         }
@@ -176,42 +204,99 @@ NavigableDialog {
             id: footerTheme
         }
 
-        RowLayout {
+        ColumnLayout {
             anchors.fill: parent
-            spacing: footerTheme.spaceMedium
+            spacing: footerTheme.spaceSmall
 
-            Button {
-                text: dialog.page === 0 ? qsTr("Advanced…") : qsTr("Overview")
-                flat: true
-                onClicked: dialog.page = dialog.page === 0 ? 1 : 0
-            }
-
-            PlankComboBox {
-                visible: dialog.hostId !== ""
-                Layout.preferredWidth: 260
-                model: [qsTr("Use for every workstation"), qsTr("Only for %1").arg(dialog.hostName)]
-                currentIndex: DisplaySetup.scope === "workstation" ? 1 : 0
-                onActivated: function(index) { DisplaySetup.scope = index === 1 ? "workstation" : "global" }
-            }
-
-            Item {
+            Label {
                 Layout.fillWidth: true
+                text: dialog.session !== null ? qsTr("Apply to the current connection") : qsTr("On next connection")
+                font.weight: Font.DemiBold
+                color: footerTheme.textPrimary
+            }
+            Label {
+                Layout.fillWidth: true
+                text: dialog.compatibility ? compatibilityPage.summary : DisplaySetup.summary
+                color: DisplaySetup.planOk || dialog.compatibility ? footerTheme.textPrimary : footerTheme.warning
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                text: dialog.compatibility ? compatibilityPage.scalingSummary :
+                      qsTr("Fit the desktop to your screen; keep proportions. Different screen shapes may leave black borders.") +
+                      (DisplaySetup.effectivePresentation === "windows" ? qsTr(" One viewer per selected screen.") : qsTr(" One viewer window."))
+                color: footerTheme.textSecondary
+                font.pointSize: 10
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: !dialog.compatibility && DisplaySetup.backingExpected
+                text: qsTr("Expected layout. The workstation confirms its supported sizes when you connect.")
+                color: footerTheme.textSecondary
+                font.pointSize: 10
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: advancedPage.pending && !dialog.compatibility && dialog.page === 1
+                text: qsTr("Preview has pending dimension edits. Update preview to check the final layout before saving.")
+                color: footerTheme.warning
+                font.pointSize: 10
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: dialog.saveError !== ""
+                text: dialog.saveError
+                color: footerTheme.warning
+                wrapMode: Text.Wrap
             }
 
-            Button {
-                text: qsTr("Cancel")
-                flat: true
-                onClicked: {
-                    DisplaySetup.cancel()
-                    dialog.returnToStream(false)
-                    dialog.close()
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: footerTheme.spaceMedium
+
+                Button {
+                    visible: !dialog.compatibility
+                    text: dialog.page === 0 ? qsTr("Advanced…") : qsTr("Basic")
+                    flat: true
+                    onClicked: {
+                        if (dialog.page === 1 && !advancedPage.commit()) return
+                        dialog.page = dialog.page === 0 ? 1 : 0
+                    }
                 }
-            }
-            Button {
-                text: dialog.connectAfter ? qsTr("Save and connect") : qsTr("Save")
-                highlighted: true
-                enabled: DisplaySetup.planOk
-                onClicked: dialog.save()
+
+                PlankComboBox {
+                    visible: dialog.hostId !== "" && !dialog.compatibility
+                    Layout.preferredWidth: 240
+                    Accessible.name: qsTr("Save display setup for")
+                    model: [qsTr("Use for every workstation"), qsTr("Only for %1").arg(dialog.hostName)]
+                    currentIndex: DisplaySetup.scope === "workstation" ? 1 : 0
+                    onActivated: function(index) {
+                        if (dialog.page === 1 && !advancedPage.commit()) return
+                        DisplaySetup.scope = index === 1 ? "workstation" : "global"
+                    }
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                Button {
+                    text: qsTr("Cancel")
+                    flat: true
+                    onClicked: {
+                        dialog.returnToStream(false)
+                        dialog.close()
+                    }
+                }
+                Button {
+                    text: dialog.connectAfter ? qsTr("Save and connect") : dialog.session !== null ? qsTr("Apply") : qsTr("Save")
+                    highlighted: true
+                    enabled: dialog.compatibility ? compatibilityPage.canSave : DisplaySetup.planOk
+                    onClicked: dialog.save()
+                }
             }
         }
     }

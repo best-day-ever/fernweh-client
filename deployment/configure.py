@@ -126,7 +126,7 @@ def resources(output, enabled):
                 continue
             entry.set("alias", entry.get("alias", name))
             source = app / name
-            if name in ("gui/main.qml", "gui/SettingsView.qml", "gui/DisplaySetupDialog.qml", "gui/DisplayAdvancedPage.qml"):
+            if name in ("gui/main.qml", "gui/SettingsView.qml", "gui/DisplaySetupDialog.qml", "gui/DisplayAdvancedPage.qml", "gui/DisplayCompatibilityPage.qml"):
                 generated = output / name
                 write_if_changed(generated, profile_qml(source.read_text(encoding="utf-8"), enabled))
                 source = generated

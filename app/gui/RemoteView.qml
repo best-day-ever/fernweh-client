@@ -79,9 +79,8 @@ Item {
             stackView.push(segue)
         }
         function onDisplaySetupRequired(hostId, hostName, reason) {
-            // New screens: the display setup. A fixed layout that no longer
-            // fits (older workstation, remote Mac): its manual page.
-            screensDialog.openFor(hostId, hostName, reason, true, reason === "new-screens" ? 0 : 1)
+            // Start with the applicable basic editor; Advanced is an explicit choice.
+            screensDialog.openFor(hostId, hostName, reason, true, 0)
         }
         function onStreamSetupRequired(hostId, hostName, reason) {
             displaySetupDialog.openFor(hostId, hostName, true, "", reason)
@@ -271,7 +270,7 @@ Item {
                     Label {
                         visible: displaySetupDialog.screens.mode === "legacy"
                         Layout.fillWidth: true
-                        text: qsTr("This workstation uses a fixed layout. Saving a display setup for it replaces the fixed layout.")
+                        text: qsTr("This workstation has a saved fixed layout. Open Screens to review the display controls supported by its Host software.")
                         wrapMode: Text.Wrap
                         opacity: 0.72
                         font.pointSize: 10
@@ -284,8 +283,7 @@ Item {
                         var hostId = displaySetupDialog.hostId
                         var hostName = displaySetupDialog.hostName
                         displaySetupDialog.close()
-                        screensDialog.openFor(hostId, hostName, "", false,
-                                              displaySetupDialog.screens.mode === "legacy" ? 1 : 0)
+                        screensDialog.openFor(hostId, hostName, "", false, 0)
                     }
                 }
             }

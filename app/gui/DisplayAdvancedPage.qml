@@ -3,21 +3,35 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.3
 
 import DisplaySetup 1.0
-// @fernweh-broker-begin
-import RemoteBroker 1.0
-// @fernweh-broker-end
+
 
 // Manual display setup for advanced users: exact sizes and positions (drag
 // with edge snapping), which workstation output backs each display, how the
-// stream is presented, and fixed layouts for workstations whose PLANK
-// predates display arrangements (or remote Macs).
+// stream is presented. Hosts without arrangements use DisplayCompatibilityPage.
 ColumnLayout {
     id: page
 
     property string hostId: ""
     property string hostName: ""
-    // A fixed layout was saved for hostId (the dialog then closes).
-    signal fixedLayoutSaved()
+    // Capture every field before replanning replaces the delegates. Save uses
+    // this too, so a focused editor never needs a separate Apply button.
+    property bool pending: false
+    property string error: ""
+
+    function commit() {
+        var edits = []
+        for (var i = 0; i < geometryRows.count; ++i) {
+            var row = geometryRows.itemAt(i)
+            if (row) edits.push(row.edit())
+        }
+        if (!DisplaySetup.applyGeometry(edits)) {
+            error = qsTr("Enter supported, even pixel dimensions and positions. Your changes have not been saved.")
+            return false
+        }
+        pending = false
+        error = ""
+        return true
+    }
 
     spacing: theme.spaceMedium
 
@@ -29,18 +43,31 @@ ColumnLayout {
         return preference === "physical" ? 1 : preference === "virtual" ? 2 : 0
     }
 
+    Label {
+        Layout.fillWidth: true
+        text: qsTr("Exact desktop dimensions and placement")
+        color: theme.textPrimary
+        font.weight: Font.DemiBold
+    }
+    Label {
+        Layout.fillWidth: true
+        text: qsTr("Dimensions below change the remote desktop. Use even pixel values. Save applies all fields, including the one you are editing.")
+        color: theme.textSecondary
+        wrapMode: Text.Wrap
+    }
+
     // ------------------------------------------------------ hand placement
     PlankCheckBox {
         Layout.fillWidth: true
         text: qsTr("Place the displays by hand (otherwise they are arranged like your desk)")
         checked: DisplaySetup.manual
-        onToggled: DisplaySetup.setManual(checked)
+        onToggled: { if (page.commit()) DisplaySetup.setManual(checked) }
     }
 
     Rectangle {
         id: canvas
         Layout.fillWidth: true
-        Layout.preferredHeight: 240
+        Layout.preferredHeight: DisplaySetup.monitorCount > 1 ? 200 : 160
         color: theme.canvas
         radius: theme.radiusMedium
         border.width: 1
@@ -113,7 +140,8 @@ ColumnLayout {
                                 if (Math.abs(y - candidatesY[b]) < snap) { y = candidatesY[b]; break }
                             }
                         }
-                        DisplaySetup.setPosition(modelData.key, x, y)
+                        var key = modelData.key
+                        if (page.commit()) DisplaySetup.setPosition(key, x, y)
                     }
                 }
             }
@@ -134,9 +162,14 @@ ColumnLayout {
     }
 
     Repeater {
+        id: geometryRows
         model: DisplaySetup.monitors
 
         delegate: RowLayout {
+            function edit() {
+                return {key: modelData.key, width: Number(widthField.text), height: Number(heightField.text),
+                        x: Number(xField.text), y: Number(yField.text)}
+            }
             Layout.fillWidth: true
             spacing: theme.spaceSmall
             enabled: modelData.on
@@ -153,59 +186,89 @@ ColumnLayout {
                 Layout.preferredWidth: 76
                 text: modelData.included ? String(modelData.width) : ""
                 validator: IntValidator { bottom: 2; top: 16384 }
-                onEditingFinished: {
-                    if (parseInt(text) !== modelData.width &&
-                            !DisplaySetup.setCustomSize(modelData.key, parseInt(text), parseInt(heightField.text))) {
-                        text = String(modelData.width)
-                    }
-                }
+                onTextEdited: page.pending = true
+                Keys.onReturnPressed: page.commit()
+                Keys.onEnterPressed: page.commit()
+                Accessible.name: qsTr("Width for %1").arg(modelData.name)
+
             }
             PlankTextField {
                 id: heightField
                 Layout.preferredWidth: 76
                 text: modelData.included ? String(modelData.height) : ""
                 validator: IntValidator { bottom: 2; top: 16384 }
-                onEditingFinished: {
-                    if (parseInt(text) !== modelData.height &&
-                            !DisplaySetup.setCustomSize(modelData.key, parseInt(widthField.text), parseInt(text))) {
-                        text = String(modelData.height)
-                    }
-                }
+                onTextEdited: page.pending = true
+                Keys.onReturnPressed: page.commit()
+                Keys.onEnterPressed: page.commit()
+                Accessible.name: qsTr("Height for %1").arg(modelData.name)
+
             }
             PlankTextField {
                 id: xField
                 Layout.preferredWidth: 76
                 text: modelData.included ? String(modelData.x) : ""
                 validator: IntValidator { bottom: -16384; top: 16384 }
-                onEditingFinished: {
-                    if (parseInt(text) !== modelData.x) {
-                        DisplaySetup.setPosition(modelData.key, parseInt(text), parseInt(yField.text))
-                    }
-                }
+                onTextEdited: page.pending = true
+                Keys.onReturnPressed: page.commit()
+                Keys.onEnterPressed: page.commit()
+                Accessible.name: qsTr("X position for %1").arg(modelData.name)
+
             }
             PlankTextField {
                 id: yField
                 Layout.preferredWidth: 76
                 text: modelData.included ? String(modelData.y) : ""
                 validator: IntValidator { bottom: -16384; top: 16384 }
-                onEditingFinished: {
-                    if (parseInt(text) !== modelData.y) {
-                        DisplaySetup.setPosition(modelData.key, parseInt(xField.text), parseInt(text))
-                    }
-                }
+                onTextEdited: page.pending = true
+                Keys.onReturnPressed: page.commit()
+                Keys.onEnterPressed: page.commit()
+                Accessible.name: qsTr("Y position for %1").arg(modelData.name)
+
             }
             PlankComboBox {
+                id: outputChoice
                 Layout.preferredWidth: 190
                 enabled: DisplaySetup.hostKind !== "legacy" && DisplaySetup.hostKind !== "mac"
                 model: [qsTr("Automatic"), qsTr("Workstation screen"), qsTr("Virtual display")]
                 currentIndex: page.backingIndex(modelData.preference)
                 onActivated: function(index) {
-                    DisplaySetup.setPreference(modelData.key, ["auto", "physical", "virtual"][index])
+                    var key = modelData.key
+                    if (page.commit()) DisplaySetup.setPreference(key, ["auto", "physical", "virtual"][index])
                 }
             }
         }
     }
 
+    RowLayout {
+        Layout.fillWidth: true
+        Button {
+            text: qsTr("Update preview")
+            enabled: page.pending
+            onClicked: page.commit()
+        }
+        Label {
+            Layout.fillWidth: true
+            text: page.error !== "" ? page.error : page.pending ? qsTr("Dimensions edited. Update the preview to check them; Save applies them too.") : ""
+            visible: text !== ""
+            color: page.error !== "" ? theme.warning : theme.textSecondary
+            wrapMode: Text.Wrap
+            Accessible.role: Accessible.StaticText
+        }
+    }
+
+    Label {
+        Layout.fillWidth: true
+        Layout.topMargin: theme.spaceMedium
+        text: qsTr("How the desktop appears on this computer")
+        color: theme.textPrimary
+        font.weight: Font.DemiBold
+    }
+    Label {
+        Layout.fillWidth: true
+        text: qsTr("The viewer fits the remote desktop to the window and keeps its proportions. This does not change text scaling inside the workstation.")
+        color: theme.textSecondary
+        wrapMode: Text.Wrap
+    }
     // -------------------------------------------------------- presentation
     RowLayout {
         Layout.fillWidth: true
@@ -219,126 +282,16 @@ ColumnLayout {
             Layout.fillWidth: true
             model: [qsTr("One fullscreen window per screen"), qsTr("One window for all screens")]
             currentIndex: DisplaySetup.presentation === "single" ? 1 : 0
-            onActivated: function(index) { DisplaySetup.setPresentation(index === 1 ? "single" : "windows") }
+            onActivated: function(index) { if (page.commit()) DisplaySetup.setPresentation(index === 1 ? "single" : "windows") }
         }
-        PlankComboBox {
-            Layout.fillWidth: true
-            model: [qsTr("Native (1:1 pixels)"), qsTr("Scale to fit")]
-            currentIndex: DisplaySetup.scaling === "fit" ? 1 : 0
-            onActivated: function(index) { DisplaySetup.setScaling(index === 1 ? "fit" : "native") }
-        }
+
     }
 
     Button {
         text: qsTr("Back to the suggested layout")
         flat: true
-        onClicked: DisplaySetup.resetToProposal()
+        onClicked: { page.pending = false; page.error = ""; DisplaySetup.resetToProposal() }
     }
 
-// @fernweh-broker-begin
-    // ------------------------------------------------ older workstations
-    ColumnLayout {
-        id: fixed
-        // Modern Linux hosts use the per-screen profile saved by this dialog.
-        // Fixed layouts are a separate path for hosts without arrangements.
-        visible: page.hostId !== "" && DisplaySetup.fixedLayoutRequired
-        Layout.fillWidth: true
-        Layout.topMargin: theme.spaceMedium
-        spacing: 8
-
-        property var setup: ({})
-        property var modes: []
-
-        function reload() {
-            if (page.hostId === "") return
-            setup = RemoteBroker.displaySetup(page.hostId)
-            modes = setup.virtualModes || []
-            fixedLayout.currentIndex = Math.max(0, setup.layoutChoice)
-            fixedMode1.currentIndex = Math.max(0, modes.indexOf(setup.virtualMode1))
-            fixedMode2.currentIndex = Math.max(0, modes.indexOf(setup.virtualMode2))
-            fixedScaling.currentIndex = setup.scalingChoice
-        }
-
-        Component.onCompleted: reload()
-        Connections {
-            target: page
-            function onHostIdChanged() { fixed.reload() }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            height: 1
-            color: theme.borderSubtle
-        }
-        Label {
-            text: qsTr("Older workstations and remote Macs")
-            color: theme.textPrimary
-            font.weight: Font.DemiBold
-        }
-        Label {
-            Layout.fillWidth: true
-            text: qsTr("A fixed layout for %1 from the sizes older BDE fernweh versions know. It replaces the display setup for this workstation until you save a display setup for it again.").arg(page.hostName)
-            color: theme.textSecondary
-            wrapMode: Text.Wrap
-            font.pointSize: 10
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: theme.spaceSmall
-
-            PlankComboBox {
-                id: fixedLayout
-                Layout.fillWidth: true
-                model: [qsTr("Match my display(s)"), qsTr("Workstation's own screens"),
-                        qsTr("One virtual display"), qsTr("Two virtual displays side by side")]
-            }
-            PlankComboBox {
-                id: fixedMode1
-                Layout.preferredWidth: 140
-                enabled: fixedLayout.currentIndex >= 2 || fixedLayout.currentIndex === 0
-                model: fixed.modes.map(function(mode) { return mode.replace("x", " × ") })
-            }
-            PlankComboBox {
-                id: fixedMode2
-                visible: fixedLayout.currentIndex === 3
-                Layout.preferredWidth: 140
-                model: fixed.modes.map(function(mode) { return mode.replace("x", " × ") })
-            }
-            PlankComboBox {
-                id: fixedScaling
-                Layout.preferredWidth: 170
-                model: [qsTr("Native (1:1 pixels)"), qsTr("Scale to fit")]
-            }
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: theme.spaceSmall
-
-            Button {
-                text: qsTr("Use this fixed layout")
-                enabled: fixed.modes.length > 0
-                onClicked: {
-                    if (DisplaySetup.useFixedLayout(page.hostId, fixedLayout.currentIndex,
-                                                    fixed.modes[fixedMode1.currentIndex],
-                                                    fixed.modes[fixedMode2.currentIndex],
-                                                    fixedScaling.currentIndex)) {
-                        page.fixedLayoutSaved()
-                    }
-                }
-            }
-            Button {
-                text: qsTr("Use the workstation's own screens as they are")
-                flat: true
-                enabled: fixed.modes.length > 0
-                onClicked: {
-                    if (DisplaySetup.useFixedLayout(page.hostId, 1, fixed.modes[fixedMode1.currentIndex],
-                                                    fixed.modes[fixedMode2.currentIndex], 1)) {
-                        page.fixedLayoutSaved()
-                    }
-                }
-            }
-        }
-    }
-// @fernweh-broker-end
 
 }

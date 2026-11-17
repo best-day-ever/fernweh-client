@@ -50,6 +50,7 @@ class DisplaySetupController : public QObject
     Q_PROPERTY(bool backingExpected READ backingExpected NOTIFY changed)
     // expected (not connected yet), arrangement, legacy, mac
     Q_PROPERTY(QString hostKind READ hostKind NOTIFY changed)
+    Q_PROPERTY(bool remoteMac READ remoteMac NOTIFY changed)
     Q_PROPERTY(bool fixedLayoutRequired READ fixedLayoutRequired NOTIFY changed)
     Q_PROPERTY(QString presentation READ presentation NOTIFY changed)
     Q_PROPERTY(QString effectivePresentation READ effectivePresentation NOTIFY changed)
@@ -75,6 +76,7 @@ public:
     // exact, looks-like or preset:WxH
     Q_INVOKABLE void setSize(const QString& key, const QString& value);
     // Even, within what the workstation drives; false when refused.
+    Q_INVOKABLE bool applyGeometry(const QVariantList& edits);
     Q_INVOKABLE bool setCustomSize(const QString& key, int width, int height);
     // auto, physical or virtual
     Q_INVOKABLE void setPreference(const QString& key, const QString& preference);
@@ -122,6 +124,7 @@ public:
     QString summary() const { return summaryOf(m_Plan); }
     bool backingExpected() const { return m_Plan.backingExpected; }
     QString hostKind() const;
+    bool remoteMac() const { return m_Host.isMac(); }
     bool fixedLayoutRequired() const {
         return m_Host.isMac() || (m_Host.isLinux() && !m_Host.supportsArrangement());
     }
