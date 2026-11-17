@@ -44,19 +44,24 @@ ColumnLayout {
     PlankTheme { id: theme }
     Label {
         Layout.fillWidth: true
-        text: DisplaySetup.remoteMac ? qsTr("Remote Mac desktop") : qsTr("Display setup for an older workstation")
+        text: DisplaySetup.remoteMac ? qsTr("Remote Mac desktop") : DisplaySetup.encodingRequiresFixedLayout ?
+              qsTr("Desktop size for this video format") : qsTr("Display setup for an older workstation")
         color: theme.textPrimary
         font.weight: Font.DemiBold
     }
     Label {
         Layout.fillWidth: true
-        text: DisplaySetup.remoteMac ? qsTr("This Mac host uses a fixed desktop mode. Choose the desktop to request when connecting.") : qsTr("This host supports fixed layouts. Update its Host software to use individual screen sizes and placement.")
+        text: DisplaySetup.remoteMac ? qsTr("This Mac host uses a fixed desktop mode. Choose the desktop to request when connecting.") :
+              DisplaySetup.encodingRequiresFixedLayout ?
+                  qsTr("The selected video format uses fixed desktop sizes. Choose one virtual desktop to request a specific resolution, or use H.265 4:4:4 in workstation settings for individual screen sizes and placement.") :
+                  qsTr("This host supports fixed layouts. Update its Host software to use individual screen sizes and placement.")
         color: theme.textSecondary
         wrapMode: Text.Wrap
     }
     Label { text: qsTr("Remote desktop"); color: theme.textSecondary }
     PlankComboBox {
         id: layout
+        objectName: "fixedLayoutChoice"
         Layout.fillWidth: true
         model: DisplaySetup.remoteMac ? [qsTr("Match this computer"), qsTr("Choose a fixed desktop size")] :
                [qsTr("Match this computer"), qsTr("Keep the workstation's existing screens"),
@@ -75,11 +80,13 @@ ColumnLayout {
         Label { text: qsTr("Desktop size"); color: theme.textSecondary }
         PlankComboBox {
             id: mode1
+            objectName: "fixedDesktopSize"
             Layout.fillWidth: true
             model: page.modes.map(function(mode) { return mode.replace("x", " × ") })
         }
         PlankComboBox {
             id: mode2
+            objectName: "secondFixedDesktopSize"
             visible: page.layoutChoice === 3
             Layout.fillWidth: true
             model: mode1.model
