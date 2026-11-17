@@ -5851,6 +5851,10 @@ void Session::execInternal()
     PlankReconnectState reconnectState;
     Uint64 reconnectDecisionDeadline = 0;
     const auto handlePlankLocalUserEvent = [this](const SDL_UserEvent& userEvent) {
+        if (PlankSessionEvents::dispatchWindowEventBarrier(userEvent,
+                m_FlushingWindowEventsRef, SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER)) {
+            return true;
+        }
         switch (userEvent.code) {
         case SDL_CODE_PLANK_POINTER_CAPTURE:
             if (m_InputHandler) m_InputHandler->pollImmersiveMouse();
@@ -6267,9 +6271,6 @@ void Session::execInternal()
                 break;
             case SDL_CODE_PLANK_APPLY_SCREENS:
                 requestDisplayLayoutApply();
-                break;
-            case SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER:
-                PlankSessionEvents::completeWindowEventBarrier(m_FlushingWindowEventsRef);
                 break;
             default:
                 SDL_assert(false);

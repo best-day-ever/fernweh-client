@@ -21,6 +21,13 @@ inline void completeWindowEventBarrier(int& pending)
     if (pending > 0) --pending;
 }
 
+inline bool dispatchWindowEventBarrier(const SDL_UserEvent& event, int& pending, int code)
+{
+    if (event.code != code) return false;
+    completeWindowEventBarrier(pending);
+    return true;
+}
+
 // A visible native window does not guarantee that a Shown/resize notification
 // is still queued. Bootstrap (and repair after fullscreen teardown) from the
 // decoder's state instead. Do not enqueue the reset: a full queue must not

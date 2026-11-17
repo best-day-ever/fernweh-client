@@ -108,7 +108,7 @@ private slots:
         QVERIFY(PlankSessionEvents::queueWindowEventBarrier(pending, 100));
         QCOMPARE(pending, 1);
         SDL_Event event {};
-        QVERIFY(SDL_PollEvent(&event));
+        QVERIFY(SDL_WaitEventTimeout(&event, 50));
         QCOMPARE(event.user.code, 100);
         PlankSessionEvents::completeWindowEventBarrier(pending);
         QCOMPARE(pending, 0);
@@ -121,6 +121,26 @@ private slots:
         PlankSessionEvents::completeWindowEventBarrier(pending);
         QCOMPARE(pending, 1);
         PlankSessionEvents::completeWindowEventBarrier(pending);
+        QCOMPARE(pending, 0);
+    }
+    void reconnectDrainReleasesQueuedBarrier()
+    {
+        int pending = 0;
+        QVERIFY(PlankSessionEvents::queueWindowEventBarrier(pending, 100));
+        SDL_Event event {};
+        QVERIFY(SDL_WaitEventTimeout(&event, 50));
+        QCOMPARE(event.type, Uint32(SDL_EVENT_USER));
+        // This is the shared local dispatch used before reconnect discards
+        // unrelated events, and by normal playback. It consumes the same marker.
+        QVERIFY(PlankSessionEvents::dispatchWindowEventBarrier(event.user, pending, 100));
+        QCOMPARE(pending, 0);
+        QVERIFY(PlankSessionEvents::queueWindowEventBarrier(pending, 100));
+        SDL_UserEvent unrelated {};
+        unrelated.code = 101;
+        QVERIFY(!PlankSessionEvents::dispatchWindowEventBarrier(unrelated, pending, 100));
+        QCOMPARE(pending, 1);
+        QVERIFY(SDL_WaitEventTimeout(&event, 50));
+        QVERIFY(PlankSessionEvents::dispatchWindowEventBarrier(event.user, pending, 100));
         QCOMPARE(pending, 0);
     }
 };
