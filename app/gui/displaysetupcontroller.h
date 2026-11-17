@@ -51,13 +51,14 @@ class DisplaySetupController : public QObject
     // expected (not connected yet), arrangement, legacy, mac
     Q_PROPERTY(QString hostKind READ hostKind NOTIFY changed)
     Q_PROPERTY(bool remoteMac READ remoteMac NOTIFY changed)
+    Q_PROPERTY(bool encodingRequiresFixedLayout READ encodingRequiresFixedLayout NOTIFY changed)
     Q_PROPERTY(bool fixedLayoutRequired READ fixedLayoutRequired NOTIFY changed)
     Q_PROPERTY(QString presentation READ presentation NOTIFY changed)
     Q_PROPERTY(QString effectivePresentation READ effectivePresentation NOTIFY changed)
     Q_PROPERTY(QString scaling READ scaling NOTIFY changed)
     Q_PROPERTY(bool manual READ manual NOTIFY changed)
     // Where accept() saves: "global" (every workstation) or "workstation".
-    Q_PROPERTY(QString scope READ scope WRITE setScope NOTIFY changed)
+    Q_PROPERTY(QString scope READ scope WRITE setScope NOTIFY scopeChanged)
     // Settings > Displays.
     Q_PROPERTY(QVariantList savedLayouts READ savedLayouts NOTIFY savedChanged)
     Q_PROPERTY(bool askOnChange READ askOnChange WRITE setAskOnChange NOTIFY savedChanged)
@@ -71,6 +72,8 @@ public:
     ~DisplaySetupController() override;
 
     Q_INVOKABLE void begin(const QString& hostId, const QString& hostName, const QString& reason);
+    // Load a selected saved source before editing; never copy A into B by changing only the destination.
+    Q_INVOKABLE bool loadSavedSource(const QString& mode);
     Q_INVOKABLE void setMonitorOn(const QString& key, bool on);
     Q_INVOKABLE void setPrimary(const QString& key);
     // exact, looks-like or preset:WxH
@@ -125,9 +128,8 @@ public:
     bool backingExpected() const { return m_Plan.backingExpected; }
     QString hostKind() const;
     bool remoteMac() const { return m_Host.isMac(); }
-    bool fixedLayoutRequired() const {
-        return m_Host.isMac() || (m_Host.isLinux() && !m_Host.supportsArrangement());
-    }
+    bool encodingRequiresFixedLayout() const;
+    bool fixedLayoutRequired() const;
     QString presentation() const { return m_Profile.presentation; }
     QString effectivePresentation() const { return m_Plan.presentation; }
     QString scaling() const { return m_Profile.scaling; }
@@ -146,6 +148,7 @@ public:
 
 signals:
     void changed();
+    void scopeChanged();
     void displaysChanged();
     void savedChanged();
     void bannerChanged();

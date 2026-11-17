@@ -59,9 +59,13 @@ ColumnLayout {
     // ------------------------------------------------------ hand placement
     PlankCheckBox {
         Layout.fillWidth: true
+        objectName: "manualDisplayPlacement"
         text: qsTr("Place the displays by hand (otherwise they are arranged like your desk)")
         checked: DisplaySetup.manual
-        onToggled: { if (page.commit()) DisplaySetup.setManual(checked) }
+        onToggled: {
+            if (page.commit()) DisplaySetup.setManual(checked)
+            else checked = Qt.binding(function() { return DisplaySetup.manual })
+        }
     }
 
     Rectangle {
@@ -227,6 +231,7 @@ ColumnLayout {
             }
             PlankComboBox {
                 id: outputChoice
+                objectName: "workstationOutputPreference"
                 Layout.preferredWidth: 190
                 enabled: DisplaySetup.hostKind !== "legacy" && DisplaySetup.hostKind !== "mac"
                 model: [qsTr("Automatic"), qsTr("Workstation screen"), qsTr("Virtual display")]
@@ -234,6 +239,7 @@ ColumnLayout {
                 onActivated: function(index) {
                     var key = modelData.key
                     if (page.commit()) DisplaySetup.setPreference(key, ["auto", "physical", "virtual"][index])
+                    else currentIndex = Qt.binding(function() { return page.backingIndex(modelData.preference) })
                 }
             }
         }
@@ -280,9 +286,13 @@ ColumnLayout {
         }
         PlankComboBox {
             Layout.fillWidth: true
+            objectName: "viewerPresentation"
             model: [qsTr("One fullscreen window per screen"), qsTr("One window for all screens")]
             currentIndex: DisplaySetup.presentation === "single" ? 1 : 0
-            onActivated: function(index) { if (page.commit()) DisplaySetup.setPresentation(index === 1 ? "single" : "windows") }
+            onActivated: function(index) {
+                if (page.commit()) DisplaySetup.setPresentation(index === 1 ? "single" : "windows")
+                else currentIndex = Qt.binding(function() { return DisplaySetup.presentation === "single" ? 1 : 0 })
+            }
         }
 
     }

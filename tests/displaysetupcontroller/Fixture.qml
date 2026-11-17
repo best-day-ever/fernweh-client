@@ -12,5 +12,6 @@ ApplicationWindow {
     Material.primary: "#393D43"
     Material.accent: "#5A9CE6"
     Item { id: stackView; anchors.fill: parent }
+    Fernweh.WorkstationDisplayModeChoice { objectName: "savedModeChoice"; visible: false }
     Fernweh.DisplaySetupDialog { id: setup; objectName: "setup" }
 }

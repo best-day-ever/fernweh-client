@@ -8,6 +8,7 @@
 #include <QSettings>
 #include <QDir>
 #include <QFileInfo>
+#include <QPointer>
 #include "gui/displaysetupcontroller.h"
 #include "backend/displaymonitor.h"
 #include "backend/clientdisplayprobe.h"
@@ -56,7 +57,15 @@ class BrokerStub:public QObject {
  Q_OBJECT
 public:
  Q_INVOKABLE void connectToHost(const QString&){}
- Q_INVOKABLE QVariantMap displaySetup(const QString&) {return {{"virtualModes",QStringList{"1920x1080","3024x1890"}},{"layoutChoice",0},{"virtualMode1","1920x1080"},{"virtualMode2","1920x1080"},{"scalingChoice",1},{"canMatchClient",true},{"matchClientSummary","One desktop, 3024 × 1898"}};}
+ Q_INVOKABLE QVariantMap displaySetup(const QString& hostId) {
+  QSettings settings;const auto setup=RemoteDisplaySetup::load(settings,hostId);
+  return {{"virtualModes",QStringList{"1920x1080","3024x1890","3840x2160"}},
+   {"layoutChoice",setup.configured?RemoteDisplaySetup::choiceForLayout(setup.hostLayout):0},
+   {"virtualMode1",setup.configured?setup.virtualMode1:QString("1920x1080")},
+   {"virtualMode2",setup.configured?setup.virtualMode2:QString("1920x1080")},
+   {"scalingChoice",setup.configured?RemoteDisplaySetup::choiceForScaling(setup.scalingMode):1},
+   {"canMatchClient",true},{"matchClientSummary","One desktop, 3024 × 1898"}};
+ }
 };
 class Probe:public QObject {
  Q_OBJECT
@@ -66,6 +75,20 @@ class Probe:public QObject {
  QQmlEngine* engine=nullptr;
  QObject* root=nullptr;
  QObject* dialog=nullptr;
+ QQuickItem* visualItem(const QString& name) const {
+  QQuickItem* found=nullptr;
+  std::function<void(QQuickItem*)> walk=[&](QQuickItem* item){
+   if(item->objectName()==name)found=item;
+   for(auto* child:item->childItems())walk(child);
+  };walk(dialog->property("contentItem").value<QQuickItem*>());return found;
+ }
+ QList<QQuickItem*> geometryFields() const {
+  QList<QQuickItem*> fields;
+  std::function<void(QQuickItem*)> walk=[&](QQuickItem* item){
+   if(item->property("validator").isValid() && item->property("text").isValid())fields<<item;
+   for(auto* child:item->childItems())walk(child);
+  };walk(dialog->property("contentItem").value<QQuickItem*>());return fields;
+ }
 private slots:
  void initTestCase(){
   QCoreApplication::setOrganizationName("FernwehQualification");
@@ -127,12 +150,12 @@ private slots:
   QCOMPARE(controller->fixedLayoutRequired(),false);
   QCOMPARE(section->isVisible(),false);
   capture("modern-linux");
-  // Choosing software encoding must not bring the duplicate controls back.
+  // Formats without arrangement support need the fixed desktop size controls.
   auto stream=RemoteStreamSetup::builtInDefaults(RemoteStreamSetup::LinuxPlatform);
   stream.mode=RemoteStreamSetup::Custom;stream.videoProfile=StreamingPreferences::PLANK_PROFILE_H264_10BIT_444;
   QVERIFY(RemoteStreamSetup::saveHost(settings,"workstation.example.test",stream));settings.sync();
   controller->begin("workstation.example.test","Workstation","");
-  QCOMPARE(controller->fixedLayoutRequired(),false);QCOMPARE(section->isVisible(),false);
+  QCOMPARE(controller->fixedLayoutRequired(),true);QCOMPARE(section->isVisible(),true);
   caps.featureFlags=0;caps.displayCapabilities.clear();
   RemoteStreamSetup::saveCapabilities(settings,"workstation.example.test",caps);settings.sync();
   controller->begin("workstation.example.test","Workstation","");
@@ -283,6 +306,117 @@ private slots:
    QVariantMap{{"key","uuid:fixture-retina"},{"width",1920},{"height",1080},{"x",0},{"y",0}},
    QVariantMap{{"key","uuid:fixture-external"},{"width",1920},{"height",1079},{"x",1920},{"y",0}}}));
   QCOMPARE(controller->monitors(),before);
+ }
+ void softwareFormatRequiresFixedLayoutForUhd(){
+  QSettings settings;RemoteStreamSetup::Capabilities caps;
+  caps.known=true;caps.platform=RemoteStreamSetup::LinuxPlatform;caps.featureFlags=DisplayArrangement::Feature;
+  caps.displayCapabilities=QString::fromUtf8(QJsonDocument(DisplayArrangement::Capabilities::fleetDefault().toJson()).toJson(QJsonDocument::Compact));
+  RemoteStreamSetup::saveCapabilities(settings,"workstation.example.test",caps);
+  auto stream=RemoteStreamSetup::builtInDefaults(RemoteStreamSetup::LinuxPlatform);
+  stream.mode=RemoteStreamSetup::Custom;stream.videoProfile=StreamingPreferences::PLANK_PROFILE_H264_10BIT_444;
+  QVERIFY(RemoteStreamSetup::saveHost(settings,"workstation.example.test",stream));settings.sync();
+  QMetaObject::invokeMethod(dialog,"openFor",Q_ARG(QVariant,QVariant("workstation.example.test")),Q_ARG(QVariant,QVariant("Workstation")),Q_ARG(QVariant,QVariant("")),Q_ARG(QVariant,QVariant(false)),Q_ARG(QVariant,QVariant(0)));
+  QCOMPARE(controller->fixedLayoutRequired(),true);
+  QCOMPARE(dialog->property("compatibility").toBool(),true);
+  QQuickItem* layout=nullptr;QQuickItem* size=nullptr;
+  std::function<void(QQuickItem*)> walk=[&](QQuickItem* item){
+   if(item->property("currentText").toString()=="Match this computer")layout=item;
+   if(item->objectName()=="fixedDesktopSize")size=item;
+   for(auto* child:item->childItems())walk(child);
+  };walk(dialog->property("contentItem").value<QQuickItem*>());QVERIFY(layout);QVERIFY(size);
+  layout->setProperty("currentIndex",2);size->setProperty("currentIndex",2);
+  const QString directory=qEnvironmentVariable("PLANK_DISPLAY_SETUP_CAPTURE_DIR");
+  if(!directory.isEmpty()){
+   QTest::qWait(100);QVERIFY(qobject_cast<QQuickWindow*>(root)->grabWindow().save(directory+"/software-fixed-uhd.png"));
+  }
+  QVERIFY(QMetaObject::invokeMethod(dialog,"save"));
+  const auto saved=RemoteDisplaySetup::load(settings,"workstation.example.test");
+  QCOMPARE(saved.hostLayout,RemoteDisplaySetup::layoutForChoice(2));
+  QCOMPARE(saved.virtualMode1,QString("3840x2160"));
+  QCOMPARE(int(RemoteStreamSetup::loadHost(settings,"workstation.example.test").videoProfile),int(StreamingPreferences::PLANK_PROFILE_H264_10BIT_444));
+  QCOMPARE(DisplayProfile::hostMode(settings,"workstation.example.test"),DisplayProfile::HostMode::Legacy);
+  QTRY_COMPARE(dialog->property("visible").toBool(),false);
+  QMetaObject::invokeMethod(dialog,"openFor",Q_ARG(QVariant,QVariant("workstation.example.test")),Q_ARG(QVariant,QVariant("Workstation")),Q_ARG(QVariant,QVariant("")),Q_ARG(QVariant,QVariant(false)),Q_ARG(QVariant,QVariant(0)));
+  QCOMPARE(dialog->findChild<QObject*>("fixedLayoutChoice")->property("currentIndex").toInt(),2);
+  QCOMPARE(dialog->findChild<QObject*>("fixedDesktopSize")->property("currentIndex").toInt(),2);
+ }
+ void savedFixedModeIsRepresentedWithoutImplicitConversion(){
+  auto* choice=root->findChild<QObject*>("savedModeChoice");QVERIFY(choice);
+  QVERIFY(QMetaObject::invokeMethod(choice,"load",Q_ARG(QVariant,QVariant("legacy"))));
+  QCOMPARE(choice->property("selectedMode").toString(),QString("legacy"));
+  QVERIFY(QMetaObject::invokeMethod(choice,"load",Q_ARG(QVariant,QVariant("custom"))));
+  QCOMPARE(choice->property("selectedMode").toString(),QString("custom"));
+  QVERIFY(QMetaObject::invokeMethod(choice,"load",Q_ARG(QVariant,QVariant("follow"))));
+  QCOMPARE(choice->property("selectedMode").toString(),QString("follow"));
+ }
+ void changingFixedModeRequiresAnExplicitSelection(){
+  auto* choice=root->findChild<QObject*>("savedModeChoice");QVERIFY(choice);
+  QVERIFY(QMetaObject::invokeMethod(choice,"load",Q_ARG(QVariant,QVariant("legacy"))));
+  auto* custom=choice->findChild<QObject*>("customDisplayMode");QVERIFY(custom);
+  custom->setProperty("checked",true);
+  QCOMPARE(choice->property("selectedMode").toString(),QString("custom"));
+  auto* fixed=choice->findChild<QObject*>("savedFixedDisplayMode");QVERIFY(fixed);
+  fixed->setProperty("checked",true);
+  QCOMPARE(choice->property("selectedMode").toString(),QString("legacy"));
+ }
+ void selectedGlobalSourceDoesNotOverwriteBWithCustomA(){
+  QSettings settings;const auto fp=controller->fingerprint();
+  auto global=DisplayPlanner::proposal(fixtureDisplays());
+  global.choice("uuid:fixture-retina").size=DisplayProfile::SizeMode::Custom;
+  global.choice("uuid:fixture-retina").fixedSize=QSize(2560,1440);
+  auto own=global;own.choice("uuid:fixture-retina").fixedSize=QSize(1920,1200);
+  DisplayProfile::saveGlobal(settings,fp,"Global B",global);
+  DisplayProfile::saveHost(settings,"workstation.example.test",fp,own);
+  DisplayProfile::setHostMode(settings,"workstation.example.test",DisplayProfile::HostMode::Custom);settings.sync();
+  auto globalStore=[&](){QVariantMap result;settings.sync();for(const auto& key:settings.allKeys())
+   if(key.startsWith("display-profiles/sets/"+fp+"/"))result[key]=settings.value(key);return result;};
+  const auto before=globalStore();
+  QVERIFY(QMetaObject::invokeMethod(dialog,"openForMode",Q_ARG(QVariant,QVariant("workstation.example.test")),Q_ARG(QVariant,QVariant("Workstation")),Q_ARG(QVariant,QVariant("")),Q_ARG(QVariant,QVariant(false)),Q_ARG(QVariant,QVariant(0)),Q_ARG(QVariant,QVariant("follow"))));
+  QCOMPARE(controller->monitors().first().toMap().value("width").toInt(),2560);
+  QCOMPARE(controller->scope(),QString("global"));
+  QCOMPARE(DisplayProfile::hostMode(settings,"workstation.example.test"),DisplayProfile::HostMode::Custom);
+  QCOMPARE(globalStore(),before);
+  QVERIFY(QMetaObject::invokeMethod(dialog,"save"));
+  QCOMPARE(globalStore(),before);
+  DisplayProfile::Profile loaded;QVERIFY(DisplayProfile::loadHost(settings,"workstation.example.test",fp,loaded));
+  QCOMPARE(DisplayProfile::encode(loaded),DisplayProfile::encode(own));
+  controller->begin("workstation.example.test","Workstation","");
+  QVERIFY(controller->setCustomSize("uuid:fixture-retina",3840,2160));QVERIFY(controller->accept());
+  QVERIFY(DisplayProfile::loadGlobal(settings,fp,loaded));
+  QCOMPARE(loaded.find("uuid:fixture-retina")->fixedSize,QSize(3840,2160));
+  QVERIFY(controller->loadSavedSource("custom"));
+  QCOMPARE(controller->monitors().first().toMap().value("width").toInt(),1920);
+  QCOMPARE(controller->scope(),QString("workstation"));
+  QVERIFY(DisplayProfile::loadGlobal(settings,fp,loaded));
+  QCOMPARE(loaded.find("uuid:fixture-retina")->fixedSize,QSize(3840,2160));
+ }
+ void saveDestinationChangeKeepsPendingGeometryAndUsesChosenHost(){
+  dialog->setProperty("page",1);QTest::qWait(50);auto fields=geometryFields();QCOMPARE(fields.size(),4);
+  QPointer<QQuickItem> height=fields[1];
+  fields[0]->setProperty("text","1920");height->setProperty("text","1079");QMetaObject::invokeMethod(height,"textEdited");
+  auto* scope=dialog->findChild<QObject*>("displaySaveScope");QVERIFY(scope);
+  QVERIFY(QMetaObject::invokeMethod(scope,"activated",Q_ARG(int,1)));
+  QCOMPARE(controller->scope(),QString("workstation"));QVERIFY(height);
+  QCOMPARE(height->property("text").toString(),QString("1079"));
+  height->setProperty("text","1080");QVERIFY(QMetaObject::invokeMethod(dialog,"save"));
+  QSettings settings;DisplayProfile::Profile stored;
+  QVERIFY(DisplayProfile::loadHost(settings,"workstation.example.test",controller->fingerprint(),stored));
+  QCOMPARE(stored.find("uuid:fixture-retina")->fixedSize,QSize(1920,1080));
+  QVERIFY(!DisplayProfile::loadGlobal(settings,controller->fingerprint(),stored));
+ }
+ void invalidGeometryCannotMisrepresentOtherAdvancedChoices(){
+  dialog->setProperty("page",1);QTest::qWait(50);auto fields=geometryFields();QCOMPARE(fields.size(),4);
+  fields[1]->setProperty("text","1079");QMetaObject::invokeMethod(fields[1],"textEdited");
+  auto* output=visualItem("workstationOutputPreference");QVERIFY(output);
+  output->setProperty("currentIndex",2);QVERIFY(QMetaObject::invokeMethod(output,"activated",Q_ARG(int,2)));
+  QCOMPARE(output->property("currentIndex").toInt(),0);
+  QCOMPARE(controller->monitors().first().toMap().value("preference").toString(),QString("auto"));
+  auto* manual=visualItem("manualDisplayPlacement");QVERIFY(manual);
+  manual->setProperty("checked",true);QVERIFY(QMetaObject::invokeMethod(manual,"toggled"));
+  QCOMPARE(manual->property("checked").toBool(),false);QCOMPARE(controller->manual(),false);
+  auto* presentation=visualItem("viewerPresentation");QVERIFY(presentation);
+  presentation->setProperty("currentIndex",1);QVERIFY(QMetaObject::invokeMethod(presentation,"activated",Q_ARG(int,1)));
+  QCOMPARE(presentation->property("currentIndex").toInt(),0);QCOMPARE(controller->presentation(),QString("windows"));
  }
  void cleanupTestCase(){delete root;delete engine;}
 };
