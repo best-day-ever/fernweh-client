@@ -860,6 +860,22 @@ QVariantMap RemoteBroker::displaySetup(const QString& hostId) const
     result.insert(QStringLiteral("matchClientReason"), match.reason);
     result.insert(QStringLiteral("matchClientSummary"), ClientDisplayProbe::matchSummary(match));
     result.insert(QStringLiteral("matchClientFitted"), match.fitted);
+    const auto capabilities = RemoteStreamSetup::loadCapabilities(settings, hostId);
+    if (capabilities.platform == RemoteStreamSetup::MacPlatform) {
+        RemoteDisplaySetup::Setup automatic = setup;
+        automatic.hostLayout = RemoteDisplaySetup::layoutForChoice(RemoteDisplaySetup::MatchClient);
+        QString reason;
+        auto macDisplays = displays;
+#ifdef Q_OS_DARWIN
+        macDisplays = ClientDisplayProbe::macMatchDisplays(
+                    displays, m_Preferences->windowMode != StreamingPreferences::WM_WINDOWED);
+#endif
+        const auto mac = RemoteDisplaySetup::prepareMac(automatic, macDisplays, &reason);
+        result.insert(QStringLiteral("canMatchClient"), !mac.mode.isEmpty());
+        result.insert(QStringLiteral("matchClientReason"), reason);
+        result.insert(QStringLiteral("matchClientSummary"), mac.mode.isEmpty() ? reason :
+                      tr("Remote Mac desktop: %1, scale %2×").arg(ClientDisplayProbe::modeText(mac.mode)).arg(mac.scale));
+    }
     result.insert(QStringLiteral("clientResolution"), ClientDisplayProbe::describe(displays));
     result.insert(QStringLiteral("virtualModes"), modes);
     return result;

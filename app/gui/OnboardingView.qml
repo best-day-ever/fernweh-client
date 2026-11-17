@@ -391,7 +391,7 @@ Item {
 
                         Label {
                             Layout.fillWidth: true
-                            text: qsTr("Your workstation will show its desktop on these screens, each at its exact size and arranged like your desk. Turn a screen off to keep it for this Mac, or pick another size. You can change this any time in Settings.")
+                            text: qsTr("Choose which screens to use and how much workspace you want. On a high-resolution screen, Larger text uses a smaller remote desktop so controls are easier to read. You can change this any time in Settings.")
                             color: theme.textSecondary
                             wrapMode: Text.Wrap
                         }

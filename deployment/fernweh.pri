@@ -14,4 +14,4 @@ INCLUDEPATH += $$OUT_PWD
 DEFINES += FERNWEH_DEPLOYMENT_CONFIGURED
 # Editing either source view regenerates its selected build resource.
 QMAKE_INTERNAL_INCLUDED_FILES += $$PWD/configure.py $$PWD/../app/qml.qrc $$PWD/../app/gui/main.qml $$PWD/../app/gui/SettingsView.qml
-QMAKE_INTERNAL_INCLUDED_FILES += $$PWD/../app/gui/DisplaySetupDialog.qml $$PWD/../app/gui/DisplayAdvancedPage.qml
+QMAKE_INTERNAL_INCLUDED_FILES += $$PWD/../app/gui/DisplaySetupDialog.qml $$PWD/../app/gui/DisplayAdvancedPage.qml $$PWD/../app/gui/DisplayCompatibilityPage.qml
