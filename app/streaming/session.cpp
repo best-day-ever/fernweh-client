@@ -5203,6 +5203,10 @@ bool Session::finishPlankReconnect(
                 state.videoWidth == m_ActiveVideoWidth &&
                 state.videoHeight == m_ActiveVideoHeight &&
                 state.videoFrameRate == m_ActiveVideoFrameRate;
+        qInfo("Reconnect video configuration: requested=%dx%d active=%dx%d previous=%dx%d format=%x/%x unchanged=%d retained=%d",
+              m_StreamConfig.width, m_StreamConfig.height,
+              m_ActiveVideoWidth, m_ActiveVideoHeight, state.videoWidth, state.videoHeight,
+              m_ActiveVideoFormat, state.videoFormat, streamConfigurationUnchanged, state.retainedRenderer);
         if (state.retainedRenderer && streamConfigurationUnchanged) {
             {
     std::lock_guard<std::mutex> decoderLock(m_DecoderLock);

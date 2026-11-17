@@ -70,7 +70,8 @@ bool FFmpegVideoDecoder::resumeAfterReconnect()
     if (!m_BackendRenderer->resumePresentation()) return false;
 
     if (!startDecoderThread()) return false;
-    qInfo("Resumed FFmpeg decode with the existing stream renderer");
+    qInfo("Resumed FFmpeg decode with the existing stream renderer (codec size %dx%d)",
+          m_VideoDecoderCtx->width, m_VideoDecoderCtx->height);
     return true;
 }
 

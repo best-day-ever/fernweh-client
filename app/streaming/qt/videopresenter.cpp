@@ -62,6 +62,25 @@ QtVideoPresenter::QtVideoPresenter(QObject* parent)
     // A bounded status check, not one queued GUI signal per rendered frame.
     m_ErrorTimer.setInterval(100);
     connect(&m_ErrorTimer, &QTimer::timeout, this, [this] {
+        if (m_LiveDeliveryTimer.isValid() && !m_LiveProgressReported &&
+                m_LiveDeliveryTimer.elapsed() >= 2000) {
+            m_LiveProgressReported = true;
+            for (size_t index = 0; index < m_Outputs.size(); ++index) {
+                const auto& output = m_Outputs[index];
+                if (!output.item || !output.window) continue;
+                const auto status = output.item->status();
+                qInfo() << "Qt video generation progress: output" << index
+                        << "deliveries" << m_LiveDeliveries
+                        << "visible" << presentationWindow(output.window)->isVisible()
+                        << "exposed" << presentationWindow(output.window)->isExposed()
+                        << "geometry-valid" << output.geometry.valid()
+                        << "stream" << output.geometry.streamSize
+                        << "sync/import/draw/swap" << status->synchronizations.load()
+                        << status->imports.load() << status->draws.load() << status->swaps.load()
+                        << "live-presented" << status->livePresented.load()
+                        << "error" << status->error.load();
+            }
+        }
         for (const auto& output : m_Outputs) {
             if (output.window && presentationWindow(output.window)->isVisible() && output.item &&
                     output.item->status()->error.load() != QtVideoStatus::None) {
@@ -303,6 +322,24 @@ void QtVideoPresenter::deliver(QtVideoFrame::Ptr frame, const QtVideoMailbox::Pr
                     (m_Outputs[index].window && presentationWindow(m_Outputs[index].window)->isVisible());
         }
     }
+    if (generation != m_DisplayedGeneration) {
+        m_LiveDeliveryTimer.invalidate();
+        m_LiveDeliveries = 0;
+        m_LiveProgressReported = false;
+    }
+    if (!probe && !m_LiveDeliveryTimer.isValid()) {
+        m_LiveDeliveryTimer.start();
+        const auto* decoded = frame->decodedFrame();
+        qInfo() << "Qt video generation first frame: decoded" << frame->size()
+                << "pts-ms" << (decoded ? decoded->pts : AV_NOPTS_VALUE);
+        for (size_t index = 0; index < m_Outputs.size(); ++index)
+            qInfo() << "Qt video generation geometry: output" << index
+                    << "valid" << m_Outputs[index].geometry.valid()
+                    << "stream" << m_Outputs[index].geometry.streamSize
+                    << "source" << m_Outputs[index].geometry.sourcePixels
+                    << "destination" << m_Outputs[index].geometry.destinationPixels;
+    }
+    if (!probe) ++m_LiveDeliveries;
     for (size_t index = 0; index < m_Outputs.size(); ++index) {
         auto& output = m_Outputs[index];
         if (!output.item || !output.window) continue;
