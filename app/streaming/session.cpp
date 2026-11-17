@@ -3833,13 +3833,7 @@ void Session::toggleFullscreen()
 {
     bool fullScreen = !(SDL_GetWindowFlags(m_Window) & m_FullScreenFlag);
 
-    if (m_UseMultiDisplayPresentation) {
-        m_DecoderLock.lock();
-        delete m_VideoDecoder;
-        m_VideoDecoder = nullptr;
-        m_DecoderLock.unlock();
-    }
-
+    bool recreateDecoder = m_UseMultiDisplayPresentation;
 #if defined(Q_OS_WIN32) || defined(Q_OS_DARWIN)
     // Destroy the video decoder before toggling full-screen because D3D9 can try
     // to put the window back into full-screen before we've managed to destroy
@@ -3849,11 +3843,13 @@ void Session::toggleFullscreen()
     // On Apple Silicon Macs, the AVSampleBufferDisplayLayer may cause WindowServer
     // to deadlock when transitioning out of fullscreen. Destroy the decoder before
     // exiting fullscreen as a workaround. See issue #973.
-    m_DecoderLock.lock();
-    delete m_VideoDecoder;
-    m_VideoDecoder = nullptr;
-    m_DecoderLock.unlock();
+    recreateDecoder = true;
 #endif
+    if (recreateDecoder) {
+        std::lock_guard<std::mutex> lock(m_DecoderLock);
+        delete m_VideoDecoder;
+        m_VideoDecoder = nullptr;
+    }
 
     // Actually enter/leave fullscreen
     setPresentationWindowsFullscreen(fullScreen);
@@ -3864,11 +3860,9 @@ void Session::toggleFullscreen()
     // Input handler might need stop/stop mouse grab after changing modes
     m_InputHandler->updatePointerRegionLock();
 
-    if (m_UseMultiDisplayPresentation) {
-        SDL_Event resetEvent = {};
-        resetEvent.type = SDL_EVENT_RENDER_DEVICE_RESET;
-        SDL_PushEvent(&resetEvent);
-    }
+    // A same-size or refused fullscreen transition need not emit a resize.
+    // Once the decoder is removed, always schedule its replacement explicitly.
+    if (recreateDecoder) requestDecoderReset();
 }
 
 class AsyncConnectionStartThread : public QThread

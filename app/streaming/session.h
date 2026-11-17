@@ -584,9 +584,11 @@ private:
     std::mutex m_DecoderLock;
     bool m_AudioDisabled;
     bool m_AudioMuted;
-    Uint32 m_FullScreenFlag;
+    // The retained SDL runtime also uses the Qt session's constructor. Keep
+    // its invariant state here so frontend constructor changes cannot drop it.
+    static constexpr Uint32 m_FullScreenFlag = SDL_WINDOW_FULLSCREEN;
     QWindow* m_QtWindow = nullptr;
-    bool m_ThreadedExec;
+    bool m_ThreadedExec = false;
     bool m_UnexpectedTermination;
     std::atomic_bool m_ReconnectRequested{false};
     std::atomic<Uint64> m_DesktopHandoffNoticeDeadline {0};
@@ -601,7 +603,7 @@ private:
     PlankReconnectPolicy m_ReconnectPolicy;
     std::atomic_bool m_CanReconnect;
     std::atomic_bool m_ConnectionStartCancelled{false};
-    std::atomic_bool m_WaitingForSessionCleanup;
+    std::atomic_bool m_WaitingForSessionCleanup {false};
     std::atomic_bool m_WaitingForActiveSessionTakeoverDecision {false};
     std::atomic_int m_ActiveSessionTakeoverDecision {0};
     QString m_PlankUsername;
@@ -666,7 +668,7 @@ private:
     PlankCallbackTarget<QtSessionInput> m_QtInputCallbacks;
 #endif
     void destroyInputHandler();
-    int m_FlushingWindowEventsRef;
+    int m_FlushingWindowEventsRef = 0;
 
     bool m_AsyncConnectionSuccess;
     int m_ActiveVideoFormat;
