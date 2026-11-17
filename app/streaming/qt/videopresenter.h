@@ -12,6 +12,7 @@ using QtPlatformVideoItem = QtEglVideoItem;
 #include <QPointer>
 #include <QQuickWindow>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <vector>
 
 // GUI-thread owner. A decoder gets only immutable device references and a
@@ -60,4 +61,7 @@ private:
     bool m_Started = false;
     QTimer m_ErrorTimer;
     std::shared_ptr<QtVideoStatus> m_DisplayedGeneration;
+    QElapsedTimer m_LiveDeliveryTimer;
+    quint64 m_LiveDeliveries = 0;
+    bool m_LiveProgressReported = false;
 };

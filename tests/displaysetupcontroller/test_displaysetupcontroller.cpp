@@ -99,7 +99,9 @@ private slots:
   qmlRegisterSingletonInstance("DisplaySetup",1,0,"DisplaySetup",controller);
   qmlRegisterSingletonInstance("RemoteBroker",1,0,"RemoteBroker",&broker);
   engine=new QQmlEngine(this);
-  QQmlComponent c(engine, QUrl::fromLocalFile(QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath("Fixture.qml")));
+  const auto fixture = QFINDTESTDATA("Fixture.qml");
+  QVERIFY2(!fixture.isEmpty(), "Display setup QML fixture was not found");
+  QQmlComponent c(engine, QUrl::fromLocalFile(fixture));
   root=c.create();
   QVERIFY2(root,qPrintable(c.errorString()));
   dialog=root->findChild<QObject*>("setup");QVERIFY(dialog);

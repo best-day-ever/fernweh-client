@@ -48,6 +48,16 @@ public:
     void prepare() override
     {
         @autoreleasepool {
+            if (m_Frame && !m_Frame->isQualification() && !m_LiveFrameLogged) {
+                m_LiveFrameLogged = true;
+                const auto* decoded = m_Frame->decodedFrame();
+                const auto buffer = decoded && decoded->format == AV_PIX_FMT_VIDEOTOOLBOX ?
+                    (CVPixelBufferRef)decoded->data[3] : nullptr;
+                qInfo() << "Qt Metal generation first frame: decoded" << m_Frame->size()
+                        << "surface" << (buffer ? QSize(CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer)) : QSize())
+                        << "stream" << m_Geometry.streamSize << "geometry-valid" << m_Geometry.valid()
+                        << "error" << m_Status->error.load();
+            }
             if (!m_Frame || m_Status->error != QtVideoStatus::None || !m_Geometry.valid() ||
                     m_Frame->size() != m_Geometry.streamSize) return;
             auto* rif = m_Window->rendererInterface();
@@ -255,6 +265,7 @@ private:
     PlankVTColorParams m_Color{};
     int m_PlaneCount = 0;
     bool m_Reduce = false;
+    bool m_LiveFrameLogged = false;
 };
 }
 
