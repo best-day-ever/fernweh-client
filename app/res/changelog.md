@@ -1,3 +1,8 @@
+## 1.2.39 — Display setup clarity
+
+- Show fixed-layout controls only for older Linux workstations and remote Macs that need them.
+- Use the per-screen resolution choices and one Save action on modern Linux workstations.
+
 ## 1.2.37 — Upstream integration
 
 ### Client

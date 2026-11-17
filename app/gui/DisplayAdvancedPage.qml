@@ -239,7 +239,9 @@ ColumnLayout {
     // ------------------------------------------------ older workstations
     ColumnLayout {
         id: fixed
-        visible: page.hostId !== ""
+        // Modern Linux hosts use the per-screen profile saved by this dialog.
+        // Fixed layouts are a separate path for hosts without arrangements.
+        visible: page.hostId !== "" && DisplaySetup.fixedLayoutRequired
         Layout.fillWidth: true
         Layout.topMargin: theme.spaceMedium
         spacing: 8

@@ -50,6 +50,7 @@ class DisplaySetupController : public QObject
     Q_PROPERTY(bool backingExpected READ backingExpected NOTIFY changed)
     // expected (not connected yet), arrangement, legacy, mac
     Q_PROPERTY(QString hostKind READ hostKind NOTIFY changed)
+    Q_PROPERTY(bool fixedLayoutRequired READ fixedLayoutRequired NOTIFY changed)
     Q_PROPERTY(QString presentation READ presentation NOTIFY changed)
     Q_PROPERTY(QString effectivePresentation READ effectivePresentation NOTIFY changed)
     Q_PROPERTY(QString scaling READ scaling NOTIFY changed)
@@ -121,6 +122,9 @@ public:
     QString summary() const { return summaryOf(m_Plan); }
     bool backingExpected() const { return m_Plan.backingExpected; }
     QString hostKind() const;
+    bool fixedLayoutRequired() const {
+        return m_Host.isMac() || (m_Host.isLinux() && !m_Host.supportsArrangement());
+    }
     QString presentation() const { return m_Profile.presentation; }
     QString effectivePresentation() const { return m_Plan.presentation; }
     QString scaling() const { return m_Profile.scaling; }
