@@ -1,3 +1,8 @@
+## 1.2.40 — Saved workstation display setup
+
+- Keep the correct display controls when reopening a saved workstation.
+- Recognize modern Linux display layouts after reconnecting or updating Fernweh.
+
 ## 1.2.39 — Display setup clarity
 
 - Show fixed-layout controls only for older Linux workstations and remote Macs that need them.
