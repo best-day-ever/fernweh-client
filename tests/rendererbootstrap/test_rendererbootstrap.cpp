@@ -92,6 +92,37 @@ private slots:
         // The caller suppresses decoder startup during transport reconnect.
         QVERIFY(!PlankSessionEvents::waitForEvent(event, 1, m_Window, false));
     }
+    void rejectedBarrierDoesNotSuppressFutureWindows()
+    {
+        int pending = 0;
+        SDL_Event queued {};
+        queued.type = SDL_EVENT_USER;
+        while (SDL_PushEvent(&queued)) {}
+        QVERIFY(!PlankSessionEvents::queueWindowEventBarrier(pending, 100));
+        QCOMPARE(pending, 0);
+        SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+        SDL_SetEventFilter([](void*, SDL_Event*) { return false; }, nullptr);
+        QVERIFY(!PlankSessionEvents::queueWindowEventBarrier(pending, 100));
+        QCOMPARE(pending, 0);
+        SDL_SetEventFilter(nullptr, nullptr);
+        QVERIFY(PlankSessionEvents::queueWindowEventBarrier(pending, 100));
+        QCOMPARE(pending, 1);
+        SDL_Event event {};
+        QVERIFY(SDL_PollEvent(&event));
+        QCOMPARE(event.user.code, 100);
+        PlankSessionEvents::completeWindowEventBarrier(pending);
+        QCOMPARE(pending, 0);
+        // A stale/duplicate event must not make future counts negative.
+        PlankSessionEvents::completeWindowEventBarrier(pending);
+        QCOMPARE(pending, 0);
+        QVERIFY(PlankSessionEvents::queueWindowEventBarrier(pending, 100));
+        QVERIFY(PlankSessionEvents::queueWindowEventBarrier(pending, 100));
+        QCOMPARE(pending, 2);
+        PlankSessionEvents::completeWindowEventBarrier(pending);
+        QCOMPARE(pending, 1);
+        PlankSessionEvents::completeWindowEventBarrier(pending);
+        QCOMPARE(pending, 0);
+    }
 };
 
 QTEST_APPLESS_MAIN(TestRendererBootstrap)

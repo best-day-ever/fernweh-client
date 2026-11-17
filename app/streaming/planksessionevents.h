@@ -4,6 +4,23 @@
 #include <SDL3/SDL_video.h>
 
 namespace PlankSessionEvents {
+// Called and consumed by the session event thread. A rejected/filtered enqueue
+// must not leave a barrier that no future event can release.
+inline bool queueWindowEventBarrier(int& pending, int code)
+{
+    SDL_Event event {};
+    event.type = SDL_EVENT_USER;
+    event.user.code = code;
+    if (!SDL_PushEvent(&event)) return false;
+    ++pending;
+    return true;
+}
+
+inline void completeWindowEventBarrier(int& pending)
+{
+    if (pending > 0) --pending;
+}
+
 // A visible native window does not guarantee that a Shown/resize notification
 // is still queued. Bootstrap (and repair after fullscreen teardown) from the
 // decoder's state instead. Do not enqueue the reset: a full queue must not

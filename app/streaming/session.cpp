@@ -3860,9 +3860,11 @@ void Session::toggleFullscreen()
     // Input handler might need stop/stop mouse grab after changing modes
     m_InputHandler->updatePointerRegionLock();
 
-    // A same-size or refused fullscreen transition need not emit a resize.
-    // Once the decoder is removed, always schedule its replacement explicitly.
+    // Qt dispatches its reset signal; the SDL event loop repairs a missing
+    // decoder directly, even without a resize or room in the event queue.
+#ifdef PLANK_QT_SESSION
     if (recreateDecoder) requestDecoderReset();
+#endif
 }
 
 class AsyncConnectionStartThread : public QThread
@@ -5351,13 +5353,11 @@ void Session::flushWindowEvents()
     // Insert a barrier to discard any additional window events.
     // We don't use SDL_FlushEvent() here because it could cause
     // important events to be lost.
-    m_FlushingWindowEventsRef++;
-
-    // This event will cause us to set m_FlushingWindowEvents back to false.
-    SDL_Event flushEvent = {};
-    flushEvent.type = SDL_EVENT_USER;
-    flushEvent.user.code = SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER;
-    SDL_PushEvent(&flushEvent);
+    if (!PlankSessionEvents::queueWindowEventBarrier(
+                m_FlushingWindowEventsRef, SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Window-event barrier could not be queued: %s", SDL_GetError());
+    }
 }
 
 class ExecThread : public QThread
@@ -6269,7 +6269,7 @@ void Session::execInternal()
                 requestDisplayLayoutApply();
                 break;
             case SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER:
-                m_FlushingWindowEventsRef--;
+                PlankSessionEvents::completeWindowEventBarrier(m_FlushingWindowEventsRef);
                 break;
             default:
                 SDL_assert(false);
