@@ -2,7 +2,9 @@
 
 This suite loads the real QML dialog, controller, planner and isolated QSettings.
 It checks resolution selection, Save/reopen, focused dimension edits, validation,
-Cancel, host capability gating, standard-DPI sizing and screen/primary choices.
+Cancel, host/format capability gating, standard-DPI sizing and screen/primary choices.
+Software formats without arrangement limits retain the explicit fixed UHD path;
+a saved fixed mode remains selected until the user explicitly changes it.
 The monitor probe, decoder limit and broker calls are fixtures; no workstation,
 user profile, GPU, network connection or capture session is used.
 

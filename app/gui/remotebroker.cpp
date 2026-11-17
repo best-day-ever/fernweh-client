@@ -1438,14 +1438,14 @@ void RemoteBroker::sendKeepalive()
 QObject* RemoteBroker::betaDiagnostics() const { return m_Diagnostics; }
 void RemoteBroker::configureDiagnostics()
 {
-    if (!configured() || !signedIn()) { m_Diagnostics->setAccount(QString(),{}); return; }
+    if (!configured() || !signedIn()) { m_Diagnostics->setAccount(QString(),{}); m_Diagnostics->setSupportTransport({},{}); return; }
     auto pins = PlankBroker::normalizePins(m_Preferences->brokerPins); pins.sort();
     const QString identity = brokerAddress().toLower()+"\n"+pins.join(",")+"\n"+m_Username;
     QSettings settings;
-    if (m_Diagnostics->enabled() && !settings.value("betaDiagnosticsNoticeShown",false).toBool()) {
-        const QString notice = tr("Beta diagnostics are enabled: session events, performance summaries and display/HDR settings are sent to your remote access administrator after disconnecting. You can turn this off in Settings.");
+    if (m_Diagnostics->enabled() && !settings.value("diagnosticSupportNoticeShown",false).toBool()) {
+        const QString notice = tr("Diagnostics are enabled: session summaries are sent after disconnecting. Your remote access administrator can also request a recent redacted Fernweh log while the app is open. You can turn both off in Settings.");
         reportSessionNotice(m_SessionNotice.isEmpty() ? notice : m_SessionNotice+"\n"+notice);
-        settings.setValue("betaDiagnosticsNoticeShown",true);
+        settings.setValue("diagnosticSupportNoticeShown",true);
     }
     const auto token = m_Token;
     const auto revision = token->revision();
@@ -1457,5 +1457,20 @@ void RemoteBroker::configureDiagnostics()
         const auto current = token->getForRevision(revision);
         if (current.isEmpty() || cancelled->load()) return 0;
         return PlankBrokerClient(lowPriority).submitDiagnostics(current,report);
+    });
+    m_Diagnostics->setSupportTransport([token,revision,config](const std::shared_ptr<std::atomic_bool>& cancelled) {
+        auto lowPriority = config;
+        lowPriority.cancelled = [cancelled] { return cancelled->load(); };
+        lowPriority.requestTimeoutMs = 3000;
+        const auto current = token->getForRevision(revision);
+        if (current.isEmpty() || cancelled->load()) return QJsonObject();
+        return PlankBrokerClient(lowPriority).diagnosticSupportRequest(current);
+    },[token,revision,config](const QJsonObject& bundle,const std::shared_ptr<std::atomic_bool>& cancelled) {
+        auto lowPriority = config;
+        lowPriority.cancelled = [cancelled] { return cancelled->load(); };
+        lowPriority.requestTimeoutMs = 3000;
+        const auto current = token->getForRevision(revision);
+        if (current.isEmpty() || cancelled->load()) return 0;
+        return PlankBrokerClient(lowPriority).submitDiagnosticSupport(current,bundle);
     });
 }

@@ -1589,7 +1589,7 @@ Flickable {
                         onToggled: RemoteBroker.betaDiagnostics.enabled = checked
                     }
                     PlankSettingHelp {
-                        text: qsTr("During beta, Fernweh sends session events, performance summaries and display/HDR settings to your remote access administrator after disconnecting. Screen contents, audio, clipboard and ordinary text logs stay on this computer. Turning this off also deletes queued reports.")
+                        text: qsTr("Fernweh sends session and performance summaries after disconnecting. Your remote access administrator can request up to 64 KiB of recent redacted Fernweh logs while the app is open, including during a stream. Screen contents, audio, clipboard and other files are excluded. Turning this off stops collection and requests, clears the log buffer and deletes queued reports.")
                     }
                 }
 

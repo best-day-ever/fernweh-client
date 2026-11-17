@@ -53,6 +53,15 @@ NavigableDialog {
         dialog.open()
     }
 
+    function openForMode(hostId, hostName, reason, connectAfter, page, mode) {
+        openFor(hostId, hostName, reason, connectAfter, page)
+        if (mode === "follow" || mode === "custom") {
+            DisplaySetup.loadSavedSource(mode)
+        } else if (mode === "legacy" && !DisplaySetup.fixedLayoutRequired) {
+            dialog.reason = qsTr("Saving this per-screen setup replaces the workstation's saved fixed desktop.")
+        }
+    }
+
     function openForSession(streamSession) {
         dialog.session = streamSession
         var streamingHostId = ""
@@ -270,11 +279,12 @@ NavigableDialog {
                 PlankComboBox {
                     visible: dialog.hostId !== "" && !dialog.compatibility
                     Layout.preferredWidth: 240
+                    objectName: "displaySaveScope"
                     Accessible.name: qsTr("Save display setup for")
-                    model: [qsTr("Use for every workstation"), qsTr("Only for %1").arg(dialog.hostName)]
+                    model: [qsTr("Use for every workstation"), dialog.hostName !== "" ?
+                            qsTr("Only for %1").arg(dialog.hostName) : qsTr("Only for this workstation")]
                     currentIndex: DisplaySetup.scope === "workstation" ? 1 : 0
                     onActivated: function(index) {
-                        if (dialog.page === 1 && !advancedPage.commit()) return
                         DisplaySetup.scope = index === 1 ? "workstation" : "global"
                     }
                 }

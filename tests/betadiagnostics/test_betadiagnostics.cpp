@@ -1,4 +1,5 @@
 #include "backend/betadiagnostics.h"
+#include "backend/diagnosticlog.h"
 #include "streaming/sessiondiagnostics.h"
 #include <QtTest>
 #include <QTemporaryDir>
@@ -8,13 +9,112 @@
 #include <QDir>
 #include <QSignalSpy>
 #include <QSemaphore>
+#include <QDateTime>
 #include <atomic>
 #include <limits>
 class BetaDiagnosticsTest : public QObject {
     Q_OBJECT
 private slots:
     void initTestCase() { QCoreApplication::setOrganizationName("DiagnosticTests"); QCoreApplication::setApplicationName("BetaDiagnostics"); QCoreApplication::setApplicationVersion("1.2.20-beta"); }
-    void init() { QSettings().clear(); }
+    void init() { QSettings().clear(); DiagnosticLog::setContext({},false); }
+    void redactedLogIsBoundedAndNeverCrossesAccounts() {
+        DiagnosticLog::setContext("account",true);
+        DiagnosticLog::append("DXGI fullscreen reset 0x887a0005\nAuthorization: Bea");
+        DiagnosticLog::append("rer private-value\nrenderer path C:\\Users\\artist\\private.exr\n");
+        DiagnosticLog::append("open https://artist:private-value@broker.example.org/path\n");
+        DiagnosticLog::append("connect 192.0.2.40:443 [2001:db8::1]:443\napi_key=private-value\n");
+        auto tail=DiagnosticLog::tail();
+        QVERIFY(tail.contains("DXGI fullscreen reset 0x887a0005"));
+        for (const auto value : {"private-value","artist","private.exr","broker.example.org","192.0.2.40","2001:db8::1"}) QVERIFY(!tail.contains(value));
+        for (int i=0;i<1000;++i) DiagnosticLog::append(QString::number(i)+" "+QString(2048,'x')+"\n");
+        QVERIFY(DiagnosticLog::tail().toUtf8().size()<=DiagnosticLog::MaxBytes);
+        QVERIFY(DiagnosticLog::tail().count('\n')<=DiagnosticLog::MaxLines);
+        DiagnosticLog::setContext("other-account",true); QVERIFY(DiagnosticLog::tail().isEmpty());
+        DiagnosticLog::append("kept\n"); DiagnosticLog::setContext("other-account",false);
+        DiagnosticLog::append("not collected\n"); QVERIFY(DiagnosticLog::tail().isEmpty());
+    }
+    void supportCollectionWorksDuringAnActiveStreamAndRetainsContext() {
+        QTemporaryDir dir; BetaDiagnostics d(dir.path()); QSignalSpy done(&d,&BetaDiagnostics::workFinished);
+        std::atomic_int summaries{0},bundles{0}; QJsonObject received;
+        d.setAccount("account",[&](const auto&,const auto&) { ++summaries; return 202; });
+        d.setSupportTransport([](const auto&) { return QJsonObject{{"schema",1},{"request_id",QString(32,'a')},
+            {"expires_unix",QDateTime::currentSecsSinceEpoch()+600}}; },
+            [&](const auto& bundle,const auto&) { received=bundle; ++bundles; return 202; });
+        d.begin(); QTRY_VERIFY(done.size()>=1);
+        DiagnosticLog::append("decoder recreated for fullscreen\npassword=do-not-collect\n");
+        const auto before=done.size(); d.pollSupport(); QTRY_VERIFY(done.size()>before);
+        QCOMPARE(bundles.load(),1); QCOMPARE(summaries.load(),0);
+        QVERIFY(received.value("log_tail").toString().contains("decoder recreated"));
+        QVERIFY(!received.value("log_tail").toString().contains("do-not-collect"));
+        QCOMPARE(received.value("report").toObject().value("events").toArray()[0].toObject().value("kind").toString(),QString("prepared"));
+        d.pollSupport(); QTRY_VERIFY(done.size()>before+1); QCOMPARE(bundles.load(),1);
+        d.finish();
+    }
+    void supportFailureRetriesButAcknowledgedRequestsSurviveRestart() {
+        QTemporaryDir dir; std::atomic_int calls{0};
+        auto poll=[](const auto&) { return QJsonObject{{"schema",1},{"request_id",QString(32,'b')},
+            {"expires_unix",QDateTime::currentSecsSinceEpoch()+600}}; };
+        {
+            BetaDiagnostics d(dir.path()); QSignalSpy done(&d,&BetaDiagnostics::workFinished);
+            d.setAccount("account",[](const auto&,const auto&) { return 503; });
+            d.setSupportTransport(poll,[&](const auto&,const auto&) { return ++calls==1 ? 503 : 202; });
+            d.pollSupport(); QTRY_VERIFY(done.size()>=1); QCOMPARE(calls.load(),1);
+            d.pollSupport(); QTRY_VERIFY(done.size()>=2); QCOMPARE(calls.load(),2);
+        }
+        BetaDiagnostics next(dir.path()); QSignalSpy done(&next,&BetaDiagnostics::workFinished);
+        next.setAccount("account",[](const auto&,const auto&) { return 503; });
+        next.setSupportTransport(poll,[&](const auto&,const auto&) { ++calls; return 202; });
+        next.pollSupport(); QTRY_VERIFY(done.size()>=1); QCOMPARE(calls.load(),2);
+    }
+    void aCheckpointCannotDiscardTheSupportPoll() {
+        QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_int uploads{0};
+        d.setAccount("account",[](const auto&,const auto&) { return 503; });
+        d.setSupportTransport([](const auto&) { return QJsonObject{{"schema",1},
+            {"request_id",QString(32,'f')},{"expires_unix",QDateTime::currentSecsSinceEpoch()+600}}; },
+            [&](const auto&,const auto&) { ++uploads; return 202; });
+        d.begin(); // The checkpoint owns the worker until its queued completion.
+        d.pollSupport();
+        QTRY_COMPARE(uploads.load(),1);
+        d.finish();
+    }
+    void optOutCancelsAnInFlightSupportRequest() {
+        QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_bool started{false},cancelled{false};
+        std::atomic_int uploads{0}; QSignalSpy done(&d,&BetaDiagnostics::workFinished);
+        d.setAccount("account",[](const auto&,const auto&) { return 503; });
+        d.setSupportTransport([&](const auto& cancel) {
+            started=true;
+            for(int i=0;i<1000 && !cancel->load();++i) QThread::msleep(1);
+            cancelled=cancel->load();
+            return QJsonObject{{"schema",1},{"request_id",QString(32,'c')},{"expires_unix",QDateTime::currentSecsSinceEpoch()+600}};
+        },[&](const auto&,const auto&) { ++uploads; return 202; });
+        DiagnosticLog::append("renderer waiting\n"); d.pollSupport(); QTRY_VERIFY(started.load());
+        d.setEnabled(false); QTRY_VERIFY(done.size()>=1); QVERIFY(cancelled.load());
+        QCOMPARE(uploads.load(),0); QVERIFY(DiagnosticLog::tail().isEmpty());
+    }
+    void supportRequestCannotUploadAfterAnAccountChange() {
+        QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_bool started{false}; std::atomic_int uploads{0};
+        QSignalSpy done(&d,&BetaDiagnostics::workFinished);
+        d.setAccount("first-account",[](const auto&,const auto&) { return 503; });
+        d.setSupportTransport([&](const auto& cancel) {
+            started=true;
+            for(int i=0;i<1000 && !cancel->load();++i) QThread::msleep(1);
+            return QJsonObject{{"schema",1},{"request_id",QString(32,'d')},{"expires_unix",QDateTime::currentSecsSinceEpoch()+600}};
+        },[&](const auto&,const auto&) { ++uploads; return 202; });
+        DiagnosticLog::append("first account renderer\n"); d.pollSupport(); QTRY_VERIFY(started.load());
+        d.setAccount("second-account",[](const auto&,const auto&) { return 503; });
+        QTRY_VERIFY(done.size()>=1); QCOMPARE(uploads.load(),0); QVERIFY(DiagnosticLog::tail().isEmpty());
+    }
+    void invalidAndExpiredSupportRequestsNeverUpload() {
+        for (int mode=0;mode<3;++mode) {
+            QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_int uploads{0}; QSignalSpy done(&d,&BetaDiagnostics::workFinished);
+            d.setAccount("account",[](const auto&,const auto&) { return 503; });
+            d.setSupportTransport([mode](const auto&) { return QJsonObject{{"schema",mode==0 ? 2 : 1},
+                {"request_id",mode==1 ? QString("../../unrelated") : QString(32,'e')},
+                {"expires_unix",QDateTime::currentSecsSinceEpoch()+(mode==2 ? -1 : 600)}}; },
+                [&](const auto&,const auto&) { ++uploads; return 202; });
+            d.pollSupport(); QTRY_VERIFY(done.size()>=1); QCOMPARE(uploads.load(),0);
+        }
+    }
     void boundedReportsAndNoRawLogFields() {
         QTemporaryDir dir;
         BetaDiagnostics d(dir.path());

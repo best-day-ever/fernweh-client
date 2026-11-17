@@ -155,6 +155,8 @@ public:
                   quint64 sequence, bool connected) const;
     // Status is advisory and never signs the user out.
     int submitDiagnostics(const QString& sessionToken, const QJsonObject& report) const;
+    QJsonObject diagnosticSupportRequest(const QString& sessionToken) const;
+    int submitDiagnosticSupport(const QString& sessionToken, const QJsonObject& bundle) const;
     void logout(const QString& sessionToken) const;
     // A fresh password + OTP session may register one key with the user's
     // own IPA rights. The broker holds the proven password only briefly;

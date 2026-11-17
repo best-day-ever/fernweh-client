@@ -3833,13 +3833,7 @@ void Session::toggleFullscreen()
 {
     bool fullScreen = !(SDL_GetWindowFlags(m_Window) & m_FullScreenFlag);
 
-    if (m_UseMultiDisplayPresentation) {
-        m_DecoderLock.lock();
-        delete m_VideoDecoder;
-        m_VideoDecoder = nullptr;
-        m_DecoderLock.unlock();
-    }
-
+    bool recreateDecoder = m_UseMultiDisplayPresentation;
 #if defined(Q_OS_WIN32) || defined(Q_OS_DARWIN)
     // Destroy the video decoder before toggling full-screen because D3D9 can try
     // to put the window back into full-screen before we've managed to destroy
@@ -3849,11 +3843,13 @@ void Session::toggleFullscreen()
     // On Apple Silicon Macs, the AVSampleBufferDisplayLayer may cause WindowServer
     // to deadlock when transitioning out of fullscreen. Destroy the decoder before
     // exiting fullscreen as a workaround. See issue #973.
-    m_DecoderLock.lock();
-    delete m_VideoDecoder;
-    m_VideoDecoder = nullptr;
-    m_DecoderLock.unlock();
+    recreateDecoder = true;
 #endif
+    if (recreateDecoder) {
+        std::lock_guard<std::mutex> lock(m_DecoderLock);
+        delete m_VideoDecoder;
+        m_VideoDecoder = nullptr;
+    }
 
     // Actually enter/leave fullscreen
     setPresentationWindowsFullscreen(fullScreen);
@@ -3864,11 +3860,11 @@ void Session::toggleFullscreen()
     // Input handler might need stop/stop mouse grab after changing modes
     m_InputHandler->updatePointerRegionLock();
 
-    if (m_UseMultiDisplayPresentation) {
-        SDL_Event resetEvent = {};
-        resetEvent.type = SDL_EVENT_RENDER_DEVICE_RESET;
-        SDL_PushEvent(&resetEvent);
-    }
+    // Qt dispatches its reset signal; the SDL event loop repairs a missing
+    // decoder directly, even without a resize or room in the event queue.
+#ifdef PLANK_QT_SESSION
+    if (recreateDecoder) requestDecoderReset();
+#endif
 }
 
 class AsyncConnectionStartThread : public QThread
@@ -5357,13 +5353,11 @@ void Session::flushWindowEvents()
     // Insert a barrier to discard any additional window events.
     // We don't use SDL_FlushEvent() here because it could cause
     // important events to be lost.
-    m_FlushingWindowEventsRef++;
-
-    // This event will cause us to set m_FlushingWindowEvents back to false.
-    SDL_Event flushEvent = {};
-    flushEvent.type = SDL_EVENT_USER;
-    flushEvent.user.code = SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER;
-    SDL_PushEvent(&flushEvent);
+    if (!PlankSessionEvents::queueWindowEventBarrier(
+                m_FlushingWindowEventsRef, SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Window-event barrier could not be queued: %s", SDL_GetError());
+    }
 }
 
 class ExecThread : public QThread
@@ -5857,6 +5851,10 @@ void Session::execInternal()
     PlankReconnectState reconnectState;
     Uint64 reconnectDecisionDeadline = 0;
     const auto handlePlankLocalUserEvent = [this](const SDL_UserEvent& userEvent) {
+        if (PlankSessionEvents::dispatchWindowEventBarrier(userEvent,
+                m_FlushingWindowEventsRef, SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER)) {
+            return true;
+        }
         switch (userEvent.code) {
         case SDL_CODE_PLANK_POINTER_CAPTURE:
             if (m_InputHandler) m_InputHandler->pollImmersiveMouse();
@@ -5905,18 +5903,6 @@ void Session::execInternal()
             return false;
         }
     };
-    if (presentationMappingDeferred) {
-        SDL_Event initializeRendererEvent = {};
-        initializeRendererEvent.type = SDL_EVENT_RENDER_DEVICE_RESET;
-        if (!SDL_PushEvent(&initializeRendererEvent)) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Unable to queue deferred Wayland renderer initialization: %s",
-                        SDL_GetError());
-            SDL_ShowWindow(m_Window);
-            presentationMappingDeferred = false;
-            initializePlankToolbar();
-        }
-    }
     SDL_Event event;
     for (;;) {
         // Qt's cancel/quit must survive a full SDL queue. The queued quit
@@ -6079,7 +6065,8 @@ void Session::execInternal()
         // Reconcile AppKit focus even when SDL omits a Spaces focus event.
         m_InputHandler->refreshTabletFocus();
 #endif
-        if (!SDL_WaitEventTimeout(&event, eventWaitTimeout)) {
+        if (!PlankSessionEvents::waitForEvent(event, eventWaitTimeout, m_Window,
+                m_VideoDecoder == nullptr && !m_Reconnecting.load())) {
             if (reconnectThread != nullptr &&
                     reconnectThread->isFinished() &&
                     !reconnectThread->completionPosted()) {
@@ -6284,9 +6271,6 @@ void Session::execInternal()
                 break;
             case SDL_CODE_PLANK_APPLY_SCREENS:
                 requestDisplayLayoutApply();
-                break;
-            case SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER:
-                m_FlushingWindowEventsRef--;
                 break;
             default:
                 SDL_assert(false);

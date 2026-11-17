@@ -182,7 +182,7 @@ Item {
 
         function loadScreens() {
             screens = DisplaySetup.hostSummary(hostId)
-            screensFollow.checked = screens.mode !== "custom"
+            screensChoice.load(screens.mode)
         }
 
         function loadStream() {
@@ -221,13 +221,13 @@ Item {
         }
 
         onAccepted: {
-            var chosenMode = screensCustom.checked ? "custom" : "follow"
-            if (screens.mode !== chosenMode)
-                DisplaySetup.setHostMode(hostId, chosenMode)
             if (!saveStream()) {
                 remoteView.errorText = qsTr("Those stream settings are not supported.")
                 return
             }
+            var chosenMode = screensChoice.selectedMode
+            if (screens.mode !== chosenMode)
+                DisplaySetup.setHostMode(hostId, chosenMode)
             if (connectAfter) {
                 remoteView.errorText = ""
                 RemoteBroker.connectToHost(hostId)
@@ -258,23 +258,11 @@ Item {
                     spacing: 0
                     Layout.fillWidth: true
 
-                    RadioButton {
-                        id: screensFollow
-                        text: qsTr("Use my display setup")
-                    }
-                    RadioButton {
-                        id: screensCustom
-                        text: qsTr("Custom for this workstation")
-                        checked: !screensFollow.checked
-                    }
-                    Label {
-                        visible: displaySetupDialog.screens.mode === "legacy"
+                    WorkstationDisplayModeChoice {
+                        id: screensChoice
                         Layout.fillWidth: true
-                        text: qsTr("This workstation has a saved fixed layout. Open Screens to review the display controls supported by its Host software.")
-                        wrapMode: Text.Wrap
-                        opacity: 0.72
-                        font.pointSize: 10
                     }
+
                 }
                 Button {
                     text: qsTr("Screens…")
@@ -283,7 +271,7 @@ Item {
                         var hostId = displaySetupDialog.hostId
                         var hostName = displaySetupDialog.hostName
                         displaySetupDialog.close()
-                        screensDialog.openFor(hostId, hostName, "", false, 0)
+                        screensDialog.openForMode(hostId, hostName, "", false, 0, screensChoice.selectedMode)
                     }
                 }
             }

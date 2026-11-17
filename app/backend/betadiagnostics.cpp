@@ -1,4 +1,5 @@
 #include "betadiagnostics.h"
+#include "diagnosticlog.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -8,6 +9,7 @@
 #include <QJsonDocument>
 #include <QPointer>
 #include <QSaveFile>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSettings>
 #include <QStandardPaths>
@@ -78,9 +80,13 @@ BetaDiagnostics::BetaDiagnostics(QString directory, QObject* parent) : QObject(p
     m_Upload.setInterval(15 * 60 * 1000);
     connect(&m_Upload, &QTimer::timeout, this, &BetaDiagnostics::tryUpload);
     m_Upload.start();
+    m_SupportPoll.setInterval(30000);
+    connect(&m_SupportPoll, &QTimer::timeout, this, &BetaDiagnostics::pollSupport);
+    m_SupportPoll.start();
 }
 BetaDiagnostics::~BetaDiagnostics() {
     m_Cancel->store(true);
+    m_SupportCancel->store(true);
     m_Worker.waitForDone(); // Network deadline is 3 seconds; no detached owner.
 }
 void BetaDiagnostics::setEnabled(bool enabled) {
@@ -88,6 +94,11 @@ void BetaDiagnostics::setEnabled(bool enabled) {
     m_Enabled = enabled;
     QSettings().setValue("betaDiagnosticsEnabled", enabled);
     m_Cancel->store(true);
+    m_SupportCancel->store(true);
+    m_SupportCancel = std::make_shared<std::atomic_bool>(!enabled || m_Identity.isEmpty());
+    if (!enabled) m_SupportPollPending = false;
+    DiagnosticLog::setContext(m_Identity, enabled);
+    if (!enabled) m_LastReport = {};
     m_Checkpoint.stop(); m_Report = {}; m_Pending.clear(); m_ActiveLock.reset();
     if (!enabled) {
         const QString directory = m_Directory;
@@ -103,10 +114,66 @@ void BetaDiagnostics::setEnabled(bool enabled) {
 void BetaDiagnostics::setAccount(const QString& identity, Sender sender) {
     m_Cancel->store(true);
     if (m_Active) { checkpoint(); m_Report = {}; m_Checkpoint.stop(); }
-    m_Identity = QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256).toHex());
+    const QString nextIdentity = identity.isEmpty() ? QString() : QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256).toHex());
+    if (nextIdentity != m_Identity) m_LastReport = {};
+    m_Identity = nextIdentity;
+    m_SupportCancel->store(true);
+    m_SupportCancel = std::make_shared<std::atomic_bool>(!m_Enabled || m_Identity.isEmpty());
+    m_SupportPollPending = false;
+    DiagnosticLog::setContext(m_Identity, m_Enabled);
+    m_CompletedSupport = QSettings().value("diagnosticSupportCompleted/" + m_Identity).toStringList();
     m_Sender = std::move(sender);
     m_Cancel = std::make_shared<std::atomic_bool>(!m_Enabled || m_Active);
     QTimer::singleShot(15000, this, &BetaDiagnostics::tryUpload);
+}
+void BetaDiagnostics::setSupportTransport(SupportPoller poller, Sender sender) {
+    m_SupportPoller = std::move(poller);
+    m_SupportSender = std::move(sender);
+    QTimer::singleShot(1000, this, &BetaDiagnostics::pollSupport);
+}
+
+void BetaDiagnostics::pollSupport() {
+    if (!m_Enabled || m_Identity.isEmpty() || !m_SupportPoller || !m_SupportSender || m_SupportCancel->load()) return;
+    if (m_Busy || !m_Pending.isEmpty()) { m_SupportPollPending = true; return; }
+    m_SupportPollPending = false;
+    m_Busy = true;
+    const auto poller = m_SupportPoller;
+    const auto sender = m_SupportSender;
+    const auto cancelled = m_SupportCancel;
+    const auto completed = m_CompletedSupport;
+    const auto identity = m_Identity;
+    QJsonObject context = !m_Report.isEmpty() ? snapshot().value("report").toObject() : m_LastReport;
+    if (context.isEmpty()) context = report(QUuid::createUuid().toString(QUuid::Id128), displays());
+    QPointer<BetaDiagnostics> self(this);
+    m_Worker.start([self,poller,sender,cancelled,completed,identity,context] {
+        QString delivered;
+        try {
+            QSettings preferences; preferences.sync();
+            if (!cancelled->load() && preferences.value("betaDiagnosticsEnabled",true).toBool()) {
+                const auto request = poller(cancelled);
+                const QString id = request.value("request_id").toString();
+                static const QRegularExpression validId(QStringLiteral("^[0-9a-f]{32}$"));
+                const qint64 now = QDateTime::currentSecsSinceEpoch();
+                const qint64 expiry = request.value("expires_unix").toInteger();
+                if (request.value("schema").toInt() == 1 && validId.match(id).hasMatch() && !completed.contains(id) &&
+                        expiry > now && expiry <= now + 900 && !cancelled->load()) {
+                    const QJsonObject bundle{{"schema",1},{"request_id",id},{"report",context},
+                                            {"log_tail",DiagnosticLog::tail()}};
+                    if (QJsonDocument(bundle).toJson(QJsonDocument::Compact).size() <= MaxSupportBytes &&
+                            sender(bundle,cancelled) == 202 && !cancelled->load()) delivered = id;
+                }
+            }
+        } catch (...) { } // Support failures never mutate sign-in or the stream.
+        if (self) QMetaObject::invokeMethod(self, [self,delivered,identity,cancelled] {
+            if (!self) return;
+            if (!delivered.isEmpty() && !cancelled->load() && self->m_Identity == identity) {
+                self->m_CompletedSupport.append(delivered);
+                while (self->m_CompletedSupport.size() > 32) self->m_CompletedSupport.removeFirst();
+                QSettings().setValue("diagnosticSupportCompleted/"+identity,self->m_CompletedSupport);
+            }
+            self->completeWork();
+        }, Qt::QueuedConnection);
+    });
 }
 QJsonObject BetaDiagnostics::report(const QString& id, const QJsonArray& displays) {
 #ifdef Q_OS_WIN32
@@ -240,6 +307,7 @@ void BetaDiagnostics::completeWork() {
     Q_ASSERT(QThread::currentThread() == thread());
     m_Busy = false;
     if (!m_Pending.isEmpty()) dispatchWrite();
+    else if (m_SupportPollPending) QTimer::singleShot(0, this, &BetaDiagnostics::pollSupport);
     // Publish completion only after the owner has transitioned its state.
     // A direct observer may immediately schedule an upload or another write.
     // Emitting from the worker let it observe completion while m_Busy was true.
@@ -248,7 +316,7 @@ void BetaDiagnostics::completeWork() {
 void BetaDiagnostics::finish() {
     if (!m_Active) return;
     recordEvent("finished");
-    if (!m_Report.isEmpty()) { m_Report.insert("displays_end",displays()); m_Report.insert("outcome",m_Failed ? "failed" : "completed"); checkpoint(); }
+    if (!m_Report.isEmpty()) { m_Report.insert("displays_end",displays()); m_Report.insert("outcome",m_Failed ? "failed" : "completed"); m_LastReport = snapshot().value("report").toObject(); checkpoint(); }
     m_Report = {}; m_Checkpoint.stop(); m_Active = false; m_ActiveLock.reset();
     m_Cancel = std::make_shared<std::atomic_bool>(!m_Enabled);
     QTimer::singleShot(15000, this, &BetaDiagnostics::tryUpload);

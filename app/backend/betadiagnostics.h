@@ -7,6 +7,7 @@
 #include <QThreadPool>
 #include <QLockFile>
 #include <QList>
+#include <QStringList>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -18,11 +19,14 @@ class BetaDiagnostics : public QObject {
     Q_PROPERTY(bool enabled READ enabled WRITE setEnabled NOTIFY changed)
 public:
     using Sender = std::function<int(const QJsonObject&, const std::shared_ptr<std::atomic_bool>&)>;
+    using SupportPoller = std::function<QJsonObject(const std::shared_ptr<std::atomic_bool>&)>;
     explicit BetaDiagnostics(QString directory, QObject* parent = nullptr);
     ~BetaDiagnostics() override;
     bool enabled() const { return m_Enabled; }
     void setEnabled(bool enabled);
     void setAccount(const QString& identity, Sender sender);
+    void setSupportTransport(SupportPoller poller, Sender sender);
+    void pollSupport();
     void begin();
     void recordEvent(const QString& kind, int code = 0);
     void sample(float fps, float videoMbps, quint32 rttMs, quint32 receivedAgeMs = 0, quint32 statisticsAgeMs = 0);
@@ -37,6 +41,7 @@ public:
     static QJsonObject report(const QString& id, const QJsonArray& displays);
     static constexpr int MaxReportBytes = 64 * 1024;
     static constexpr int MaxFiles = 8;
+    static constexpr int MaxSupportBytes = 192 * 1024;
 signals:
     void changed();
     void workFinished();
@@ -46,6 +51,11 @@ private:
     QJsonObject snapshot() const;
     QString m_Directory, m_Identity;
     Sender m_Sender;
+    SupportPoller m_SupportPoller;
+    Sender m_SupportSender;
+    QStringList m_CompletedSupport;
+    QJsonObject m_LastReport;
+    bool m_SupportPollPending = false;
     bool m_Enabled = true, m_Active = false, m_Busy = false, m_Failed = false, m_StallReported = false;
     bool m_StatisticsObserved = false, m_RendererProgressObserved = false;
     struct PendingWrite { QJsonObject envelope; std::shared_ptr<QLockFile> lock; };
@@ -53,7 +63,8 @@ private:
     QList<PendingWrite> m_Pending;
     std::shared_ptr<QLockFile> m_ActiveLock;
     QElapsedTimer m_Elapsed;
-    QTimer m_Checkpoint, m_Upload;
+    QTimer m_Checkpoint, m_Upload, m_SupportPoll;
     QThreadPool m_Worker;
     std::shared_ptr<std::atomic_bool> m_Cancel = std::make_shared<std::atomic_bool>(true);
+    std::shared_ptr<std::atomic_bool> m_SupportCancel = std::make_shared<std::atomic_bool>(true);
 };

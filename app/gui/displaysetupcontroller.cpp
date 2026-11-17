@@ -59,6 +59,18 @@ QVariantMap rect(int x, int y, int width, int height)
             {QStringLiteral("width"), width}, {QStringLiteral("height"), height}};
 }
 
+
+bool usesFixedLayoutEncoding(const DisplayPlanner::HostInfo& host)
+{
+    return host.isLinux() && host.supportsArrangement() && !host.encodingMode.isEmpty() &&
+            !host.capabilities.encodingLimits.contains(host.encodingMode);
+}
+
+bool requiresFixedLayout(const DisplayPlanner::HostInfo& host)
+{
+    return host.isMac() || (host.isLinux() && (!host.supportsArrangement() || usesFixedLayoutEncoding(host)));
+}
+
 }
 
 DisplaySetupController::DisplaySetupController(QObject* parent)
@@ -118,6 +130,16 @@ DisplayPlanner::HostInfo DisplaySetupController::hostInfo(const QString& hostId)
     return host;
 }
 
+bool DisplaySetupController::encodingRequiresFixedLayout() const
+{
+    return usesFixedLayoutEncoding(m_Host);
+}
+
+bool DisplaySetupController::fixedLayoutRequired() const
+{
+    return requiresFixedLayout(m_Host);
+}
+
 DisplayPlanner::Limits DisplaySetupController::limits() const
 {
     DisplayPlanner::Limits limits;
@@ -166,10 +188,27 @@ void DisplaySetupController::begin(const QString& hostId, const QString& hostNam
         DisplayProfile::Profile global;
         if (DisplayProfile::loadGlobal(settings, m_Fingerprint, global)) m_Profile = global;
     }
-    m_Scope = !m_HostId.isEmpty() && DisplayProfile::hostMode(settings, m_HostId) == DisplayProfile::HostMode::Custom ?
+    m_Scope = !m_HostId.isEmpty() && DisplayProfile::hostMode(settings, m_HostId) != DisplayProfile::HostMode::Follow ?
                 QStringLiteral("workstation") : QStringLiteral("global");
+    emit scopeChanged();
     replan();
     emit displaysChanged();
+}
+
+bool DisplaySetupController::loadSavedSource(const QString& mode)
+{
+    if (mode != QLatin1String("follow") && mode != QLatin1String("custom")) return false;
+    if (mode == QLatin1String("custom") && m_HostId.isEmpty()) return false;
+    QSettings settings;
+    DisplayProfile::Profile selected;
+    bool loaded = mode == QLatin1String("custom") &&
+            DisplayProfile::loadHost(settings, m_HostId, m_Fingerprint, selected);
+    if (!loaded) loaded = DisplayProfile::loadGlobal(settings, m_Fingerprint, selected);
+    m_Profile = loaded ? selected : DisplayPlanner::proposal(m_Displays);
+    m_Scope = mode == QLatin1String("custom") ? QStringLiteral("workstation") : QStringLiteral("global");
+    emit scopeChanged();
+    replan();
+    return true;
 }
 
 void DisplaySetupController::replan()
@@ -387,7 +426,11 @@ bool DisplaySetupController::accept()
         DisplayProfile::saveHost(settings, m_HostId, m_Fingerprint, m_Profile);
         DisplayProfile::setHostMode(settings, m_HostId, DisplayProfile::HostMode::Custom);
     } else {
-        DisplayProfile::saveGlobal(settings, m_Fingerprint, m_Label, m_Profile);
+        DisplayProfile::Profile existing;
+        if (!DisplayProfile::loadGlobal(settings, m_Fingerprint, existing) ||
+                DisplayProfile::encode(existing) != DisplayProfile::encode(m_Profile)) {
+            DisplayProfile::saveGlobal(settings, m_Fingerprint, m_Label, m_Profile);
+        }
         if (!m_HostId.isEmpty()) DisplayProfile::setHostMode(settings, m_HostId, DisplayProfile::HostMode::Follow);
     }
     DisplayProfile::clearChooseBanner(settings);
@@ -412,6 +455,7 @@ void DisplaySetupController::setHostMode(const QString& hostId, const QString& m
     settings.sync();
     if (hostId == m_HostId) {
         m_Scope = mode == QLatin1String("custom") ? QStringLiteral("workstation") : QStringLiteral("global");
+        emit scopeChanged();
         emit changed();
     }
     emit savedChanged();
@@ -422,7 +466,7 @@ bool DisplaySetupController::useFixedLayout(const QString& hostId, int layoutCho
 {
     if (!PlankBroker::isHostId(hostId)) return false;
     const auto host = hostInfo(hostId);
-    if (!host.isMac() && !(host.isLinux() && !host.supportsArrangement())) return false;
+    if (!requiresFixedLayout(host)) return false;
     RemoteDisplaySetup::Setup setup;
     setup.hostLayout = RemoteDisplaySetup::layoutForChoice(layoutChoice);
     setup.virtualMode1 = virtualMode1;
@@ -654,7 +698,7 @@ void DisplaySetupController::setScope(const QString& scope)
                 QStringLiteral("workstation") : QStringLiteral("global");
     if (next == m_Scope) return;
     m_Scope = next;
-    emit changed();
+    emit scopeChanged();
 }
 
 QVariantList DisplaySetupController::savedLayouts() const
