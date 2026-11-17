@@ -100,6 +100,12 @@ DisplayPlanner::HostInfo DisplaySetupController::hostInfo(const QString& hostId)
     if (!caps.displayCapabilities.isEmpty()) {
         DisplayArrangement::Capabilities::fromJson(
                     QJsonDocument::fromJson(caps.displayCapabilities.toUtf8()).object(), host.capabilities);
+        // Older caches kept the pre-authentication server-info flags beside
+        // the authenticated topology's capabilities. A valid arrangement
+        // description is positive evidence even when that earlier bit is absent.
+        if (host.isLinux() && host.capabilities.valid) {
+            host.featureFlags |= DisplayArrangement::Feature;
+        }
     }
     // The encoding the next connect will use: this workstation's own
     // choice, else the remote access defaults, else the built-in default.
