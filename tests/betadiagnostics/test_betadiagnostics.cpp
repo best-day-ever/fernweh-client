@@ -66,6 +66,17 @@ private slots:
         next.setSupportTransport(poll,[&](const auto&,const auto&) { ++calls; return 202; });
         next.pollSupport(); QTRY_VERIFY(done.size()>=1); QCOMPARE(calls.load(),2);
     }
+    void aCheckpointCannotDiscardTheSupportPoll() {
+        QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_int uploads{0};
+        d.setAccount("account",[](const auto&,const auto&) { return 503; });
+        d.setSupportTransport([](const auto&) { return QJsonObject{{"schema",1},
+            {"request_id",QString(32,'f')},{"expires_unix",QDateTime::currentSecsSinceEpoch()+600}}; },
+            [&](const auto&,const auto&) { ++uploads; return 202; });
+        d.begin(); // The checkpoint owns the worker until its queued completion.
+        d.pollSupport();
+        QTRY_COMPARE(uploads.load(),1);
+        d.finish();
+    }
     void optOutCancelsAnInFlightSupportRequest() {
         QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_bool started{false},cancelled{false};
         std::atomic_int uploads{0}; QSignalSpy done(&d,&BetaDiagnostics::workFinished);

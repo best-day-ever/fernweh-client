@@ -96,6 +96,7 @@ void BetaDiagnostics::setEnabled(bool enabled) {
     m_Cancel->store(true);
     m_SupportCancel->store(true);
     m_SupportCancel = std::make_shared<std::atomic_bool>(!enabled || m_Identity.isEmpty());
+    if (!enabled) m_SupportPollPending = false;
     DiagnosticLog::setContext(m_Identity, enabled);
     if (!enabled) m_LastReport = {};
     m_Checkpoint.stop(); m_Report = {}; m_Pending.clear(); m_ActiveLock.reset();
@@ -118,6 +119,7 @@ void BetaDiagnostics::setAccount(const QString& identity, Sender sender) {
     m_Identity = nextIdentity;
     m_SupportCancel->store(true);
     m_SupportCancel = std::make_shared<std::atomic_bool>(!m_Enabled || m_Identity.isEmpty());
+    m_SupportPollPending = false;
     DiagnosticLog::setContext(m_Identity, m_Enabled);
     m_CompletedSupport = QSettings().value("diagnosticSupportCompleted/" + m_Identity).toStringList();
     m_Sender = std::move(sender);
@@ -131,8 +133,9 @@ void BetaDiagnostics::setSupportTransport(SupportPoller poller, Sender sender) {
 }
 
 void BetaDiagnostics::pollSupport() {
-    if (!m_Enabled || m_Identity.isEmpty() || m_Busy || !m_Pending.isEmpty() ||
-            !m_SupportPoller || !m_SupportSender || m_SupportCancel->load()) return;
+    if (!m_Enabled || m_Identity.isEmpty() || !m_SupportPoller || !m_SupportSender || m_SupportCancel->load()) return;
+    if (m_Busy || !m_Pending.isEmpty()) { m_SupportPollPending = true; return; }
+    m_SupportPollPending = false;
     m_Busy = true;
     const auto poller = m_SupportPoller;
     const auto sender = m_SupportSender;
@@ -304,6 +307,7 @@ void BetaDiagnostics::completeWork() {
     Q_ASSERT(QThread::currentThread() == thread());
     m_Busy = false;
     if (!m_Pending.isEmpty()) dispatchWrite();
+    else if (m_SupportPollPending) QTimer::singleShot(0, this, &BetaDiagnostics::pollSupport);
     // Publish completion only after the owner has transitioned its state.
     // A direct observer may immediately schedule an upload or another write.
     // Emitting from the worker let it observe completion while m_Busy was true.

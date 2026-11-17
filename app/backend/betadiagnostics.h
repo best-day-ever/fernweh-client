@@ -55,6 +55,7 @@ private:
     Sender m_SupportSender;
     QStringList m_CompletedSupport;
     QJsonObject m_LastReport;
+    bool m_SupportPollPending = false;
     bool m_Enabled = true, m_Active = false, m_Busy = false, m_Failed = false, m_StallReported = false;
     bool m_StatisticsObserved = false, m_RendererProgressObserved = false;
     struct PendingWrite { QJsonObject envelope; std::shared_ptr<QLockFile> lock; };
