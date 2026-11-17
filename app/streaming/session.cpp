@@ -5905,18 +5905,6 @@ void Session::execInternal()
             return false;
         }
     };
-    if (presentationMappingDeferred) {
-        SDL_Event initializeRendererEvent = {};
-        initializeRendererEvent.type = SDL_EVENT_RENDER_DEVICE_RESET;
-        if (!SDL_PushEvent(&initializeRendererEvent)) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Unable to queue deferred Wayland renderer initialization: %s",
-                        SDL_GetError());
-            SDL_ShowWindow(m_Window);
-            presentationMappingDeferred = false;
-            initializePlankToolbar();
-        }
-    }
     SDL_Event event;
     for (;;) {
         // Qt's cancel/quit must survive a full SDL queue. The queued quit
@@ -6079,7 +6067,8 @@ void Session::execInternal()
         // Reconcile AppKit focus even when SDL omits a Spaces focus event.
         m_InputHandler->refreshTabletFocus();
 #endif
-        if (!SDL_WaitEventTimeout(&event, eventWaitTimeout)) {
+        if (!PlankSessionEvents::waitForEvent(event, eventWaitTimeout, m_Window,
+                m_VideoDecoder == nullptr && !m_Reconnecting.load())) {
             if (reconnectThread != nullptr &&
                     reconnectThread->isFinished() &&
                     !reconnectThread->completionPosted()) {
