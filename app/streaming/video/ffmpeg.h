@@ -38,6 +38,7 @@ public:
     virtual IFFmpegRenderer* getBackendRenderer();
 
 private:
+    bool m_LogNextLiveFrame = true; // decoder worker only, reset while it is stopped
     ClientFrameFlowTrace m_FrameFlowTrace {"decode"};
     bool completeInitialization(const AVCodec* decoder,
                                 enum AVPixelFormat requiredFormat,

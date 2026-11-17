@@ -55,6 +55,7 @@ bool FFmpegVideoDecoder::suspendForReconnect()
     m_LastFrameNumber = 0;
     m_ConsecutiveFailedDecodes = 0;
     m_FrameInfoQueue.clear();
+    m_LogNextLiveFrame = true;
 
     qInfo("Paused FFmpeg decode while retaining the stream renderer");
     return true;
@@ -997,6 +998,11 @@ void FFmpegVideoDecoder::presentDecodedFrame(AVFrame* frame)
 
     m_ActiveWndVideoStats.decodedFrames++;
 
+    if (m_LogNextLiveFrame) {
+        m_LogNextLiveFrame = false;
+        qInfo("FFmpeg generation first decoded frame: size=%dx%d format=%d pts-ms=%lld",
+              frame->width, frame->height, frame->format, static_cast<long long>(frame->pts));
+    }
     // The Qt presenter owns the bounded render queue.
     m_BackendRenderer->renderFrame(frame);
 }
