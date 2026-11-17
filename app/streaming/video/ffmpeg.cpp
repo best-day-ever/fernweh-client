@@ -69,9 +69,11 @@ bool FFmpegVideoDecoder::resumeAfterReconnect()
 
     if (!m_BackendRenderer->resumePresentation()) return false;
 
+    const int retainedWidth = m_VideoDecoderCtx->width;
+    const int retainedHeight = m_VideoDecoderCtx->height;
     if (!startDecoderThread()) return false;
-    qInfo("Resumed FFmpeg decode with the existing stream renderer (codec size %dx%d)",
-          m_VideoDecoderCtx->width, m_VideoDecoderCtx->height);
+    qInfo("Resumed FFmpeg decode with the existing stream renderer (retained codec size %dx%d)",
+          retainedWidth, retainedHeight);
     return true;
 }
 
