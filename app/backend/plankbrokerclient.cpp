@@ -100,7 +100,8 @@ PlankBrokerClient::Response PlankBrokerClient::request(const QByteArray& method,
     url.setPath(path, QUrl::StrictMode);
 
     QNetworkRequest request(url);
-    if (path == QLatin1String("/v1/diagnostics")) request.setPriority(QNetworkRequest::LowPriority);
+    if (path == QLatin1String("/v1/diagnostics") || path.startsWith(QLatin1String("/v1/diagnostics/")))
+        request.setPriority(QNetworkRequest::LowPriority);
     QSslConfiguration ssl = QSslConfiguration::defaultConfiguration();
     ssl.setProtocol(QSsl::TlsV1_3OrLater);
     // No WebPKI: with no trust anchors every handshake reports errors, and
@@ -595,4 +596,19 @@ int PlankBrokerClient::submitDiagnostics(const QString& sessionToken, const QJso
     if (sessionToken.isEmpty()) return 401;
     if (QJsonDocument(report).toJson(QJsonDocument::Compact).size() > 64 * 1024) return 413;
     return request("POST", QStringLiteral("/v1/diagnostics"), &report, sessionToken).status;
+}
+
+QJsonObject PlankBrokerClient::diagnosticSupportRequest(const QString& sessionToken) const
+{
+    if (sessionToken.isEmpty()) return {};
+    const auto response = request("GET", QStringLiteral("/v1/diagnostics/support-request"), nullptr, sessionToken);
+    if (response.status != 200 || response.body.size() > 1024) return {};
+    return QJsonDocument::fromJson(response.body).object();
+}
+
+int PlankBrokerClient::submitDiagnosticSupport(const QString& sessionToken, const QJsonObject& bundle) const
+{
+    if (sessionToken.isEmpty()) return 401;
+    if (QJsonDocument(bundle).toJson(QJsonDocument::Compact).size() > 192 * 1024) return 413;
+    return request("POST", QStringLiteral("/v1/diagnostics/support"), &bundle, sessionToken).status;
 }

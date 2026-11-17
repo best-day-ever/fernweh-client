@@ -78,6 +78,7 @@
 #include "backend/computermanager.h"
 #if FERNWEH_BROKER_ENABLED
 #include "backend/fernwehupdater.h"
+#include "backend/diagnosticlog.h"
 #endif
 #include <QSslSocket>
 #include "backend/systemproperties.h"
@@ -126,6 +127,9 @@ static QString currentLogTimestamp()
 
 void logToLoggerStream(QString& message)
 {
+#if FERNWEH_BROKER_ENABLED
+    DiagnosticLog::append(message);
+#endif
     QMutexLocker locker(&s_SyncLoggerMutex);
 
 #if defined(QT_DEBUG) && defined(Q_OS_WIN32)
@@ -199,6 +203,15 @@ void qtLogToDiskHandler(QtMsgType type, const QMessageLogContext&, const QString
 
     logToLoggerStream(txt);
 }
+
+#ifdef Q_OS_WIN32
+void SDLCALL sdlLogToDiskHandler(void*, int category, SDL_LogPriority priority, const char* message)
+{
+    QString text = QString("%1 - SDL [%2/%3]: %4\n").arg(currentLogTimestamp())
+            .arg(category).arg(int(priority)).arg(QString::fromUtf8(message));
+    logToLoggerStream(text);
+}
+#endif
 
 #ifdef HAVE_FFMPEG
 
@@ -445,6 +458,11 @@ int main(int argc, char *argv[])
 
     // Register our logger with all libraries
     qInstallMessageHandler(qtLogToDiskHandler);
+#ifdef Q_OS_WIN32
+    // SDL's default Windows sink is the debugger/stderr, which a GUI launch
+    // may not retain. Fullscreen/renderer messages must reach the same log.
+    SDL_SetLogOutputFunction(sdlLogToDiskHandler, nullptr);
+#endif
 #ifdef HAVE_FFMPEG
     av_log_set_callback(ffmpegLogToDiskHandler);
 #endif
@@ -989,6 +1007,9 @@ int main(int argc, char *argv[])
 
     // Restore the default logger for all libraries before shutting down ours
     qInstallMessageHandler(nullptr);
+#ifdef Q_OS_WIN32
+    SDL_SetLogOutputFunction(SDL_GetDefaultLogOutputFunction(), nullptr);
+#endif
 #ifdef HAVE_FFMPEG
     av_log_set_callback(av_log_default_callback);
 #endif

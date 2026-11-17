@@ -369,6 +369,7 @@ HEADERS += \
     backend/plankbrokerclient.h \
     backend/fernwehupdater.h \
     backend/betadiagnostics.h \
+    backend/diagnosticlog.h \
     backend/fernwehupdatepolicy.h \
     backend/plankenrollment.h \
     backend/plankpasskey.h \
@@ -898,7 +899,7 @@ win32 {
         backend/plankenrollment.cpp backend/plankpasskey.cpp backend/qrencoder.cpp \
         gui/remotebroker.cpp gui/onboardingcontroller.cpp
     HEADERS -= backend/brokersessionstore.h backend/brokerdevicekey.h \
-        backend/plankbrokerclient.h backend/fernwehupdater.h backend/betadiagnostics.h \
+        backend/plankbrokerclient.h backend/fernwehupdater.h backend/betadiagnostics.h backend/diagnosticlog.h \
         backend/plankenrollment.h backend/plankpasskey.h backend/qrencoder.h \
         gui/remotebroker.h gui/onboardingcontroller.h
 }
