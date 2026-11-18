@@ -31,7 +31,7 @@ public:
         // Drop the entire entry, including continuation chunks, for content
         // which could carry authentication, clipboard or file payloads.
         static const QRegularExpression sensitive(QStringLiteral(
-            R"((?i)\b(authorization|bearer|cookie|password|passwd|passphrase|token|secret|otp|totp|assertion|credential|clipboard|payload|ap-req|private[ _-]?key|encryption[ _-]?key|api[ _-]?key|access[ _-]?key|refresh[ _-]?key)\b)"));
+            R"((?i)\b(authorization|bearer|cookie|password|passwd|passphrase|token|secret|probe[ _-]?(secret|proof)|otp|totp|assertion|credential|clipboard|payload|ap-req|private[ _-]?key|encryption[ _-]?key|api[ _-]?key|access[ _-]?key|refresh[ _-]?key)\b)"));
         if (sensitive.match(line).hasMatch()) return QStringLiteral("[sensitive log entry omitted]");
         static const QRegularExpression url(QStringLiteral(R"((?i)\b[a-z][a-z0-9+.-]*://[^\s<>]+)"));
         static const QRegularExpression email(QStringLiteral(R"((?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b)"));

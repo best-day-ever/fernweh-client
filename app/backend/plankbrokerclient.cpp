@@ -1,5 +1,6 @@
 #include "fernwehupdatepolicy.h"
 #include "plankbrokerclient.h"
+#include <QElapsedTimer>
 #include "plankenrollment.h"
 
 #include <QCoreApplication>
@@ -611,4 +612,28 @@ int PlankBrokerClient::submitDiagnosticSupport(const QString& sessionToken, cons
     if (sessionToken.isEmpty()) return 401;
     if (QJsonDocument(bundle).toJson(QJsonDocument::Compact).size() > 192 * 1024) return 413;
     return request("POST", QStringLiteral("/v1/diagnostics/support"), &bundle, sessionToken).status;
+}
+
+QJsonObject PlankBrokerClient::diagnosticNetworkRequest(const QString& sessionToken) const
+{
+    if (sessionToken.isEmpty()) return {};
+    const auto response=request("GET",QStringLiteral("/v1/diagnostics/network-request"),nullptr,sessionToken);
+    if (response.status!=200 || response.body.size()>1024) return {};
+    return QJsonDocument::fromJson(response.body).object();
+}
+
+QJsonObject PlankBrokerClient::startDiagnosticNetwork(const QString& sessionToken,const QJsonObject& body) const
+{
+    if (sessionToken.isEmpty()) return {};
+    QElapsedTimer elapsed; elapsed.start();
+    const auto response=request("POST",QStringLiteral("/v1/diagnostics/network/start"),&body,sessionToken);
+    if (response.status!=200 || response.body.size()>2048) return {};
+    auto grant=QJsonDocument::fromJson(response.body).object(); grant["api_ms"]=int(elapsed.elapsed()); return grant;
+}
+
+int PlankBrokerClient::submitDiagnosticNetwork(const QString& sessionToken,const QJsonObject& bundle) const
+{
+    if (sessionToken.isEmpty()) return 401;
+    if (QJsonDocument(bundle).toJson(QJsonDocument::Compact).size()>192*1024) return 413;
+    return request("POST",QStringLiteral("/v1/diagnostics/network/finish"),&bundle,sessionToken).status;
 }

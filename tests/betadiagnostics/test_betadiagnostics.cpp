@@ -17,6 +17,67 @@ class BetaDiagnosticsTest : public QObject {
 private slots:
     void initTestCase() { QCoreApplication::setOrganizationName("DiagnosticTests"); QCoreApplication::setApplicationName("BetaDiagnostics"); QCoreApplication::setApplicationVersion("1.2.20-beta"); }
     void init() { QSettings().clear(); DiagnosticLog::setContext({},false); }
+    void brokerCapableOfProcessLogsDoesNotSuppressAnotherWindow() {
+        QTemporaryDir firstDir,secondDir; QString firstId,secondId; std::atomic_int uploads{0};
+        const auto poll=[](const auto&) {return QJsonObject{{"schema",1},{"request_id",QString(32,'e')},
+            {"expires_unix",QDateTime::currentSecsSinceEpoch()+600},{"client_instance_supported",true}};};
+        BetaDiagnostics first(firstDir.path());QSignalSpy firstDone(&first,&BetaDiagnostics::workFinished);
+        first.setAccount("shared-account",[](const auto&,const auto&){return 202;});
+        first.setSupportTransport(poll,[&](const auto& b,const auto&){firstId=b.value("client_instance").toString();++uploads;return 202;});
+        first.pollSupport();QTRY_VERIFY(firstDone.size()>0);QCOMPARE(uploads.load(),1);
+        BetaDiagnostics second(secondDir.path());QSignalSpy secondDone(&second,&BetaDiagnostics::workFinished);
+        second.setAccount("shared-account",[](const auto&,const auto&){return 202;});
+        second.setSupportTransport(poll,[&](const auto& b,const auto&){secondId=b.value("client_instance").toString();++uploads;return 202;});
+        second.pollSupport();QTRY_VERIFY(secondDone.size()>0);QCOMPARE(uploads.load(),2);
+        QVERIFY(firstId.size()==32&&secondId.size()==32&&firstId!=secondId);
+        first.pollSupport();QTRY_VERIFY(firstDone.size()>1);QCOMPARE(uploads.load(),2);
+    }
+    void networkCapabilitiesCannotLeakIntoApplicationLogTails() {
+        DiagnosticLog::setContext("account",true);
+        DiagnosticLog::append("probe_secret=short-private-value\nX-Fernweh-Probe-Proof: short-private-value\n");
+        QVERIFY(!DiagnosticLog::tail().contains("short-private-value"));
+    }
+    void networkResultsRetryWithoutRerunningTheTest() {
+        QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_int runs{0},uploads{0},summaries{0};
+        QSignalSpy done(&d,&BetaDiagnostics::networkWorkFinished);
+        d.setAccount("network-account",[&](const auto&,const auto&) { ++summaries; return 202; });
+        d.setNetworkTransport({"broker.example.org",443,{}},[](const auto&) {
+            return QJsonObject{{"schema",1},{"request_id",QString(32,'a')},{"expires_unix",QDateTime::currentSecsSinceEpoch()+600}};
+        },[](const auto& body,const auto&) {
+            return QJsonObject{{"schema",1},{"request_id",body.value("request_id")},{"client_instance",body.value("client_instance")},{"probe_id",QString(32,'b')}};
+        },[&](const auto&,const auto&) { return ++uploads==1?503:202; },
+        [&](const auto&,const auto&,const auto&) { ++runs; return QJsonObject{{"fixture",true}}; });
+        d.pollNetwork(); QTRY_COMPARE(done.size(),1); QCOMPARE(runs.load(),1); QCOMPARE(uploads.load(),1);
+        d.pollNetwork(); QTRY_COMPARE(done.size(),2); QCOMPARE(runs.load(),1); QCOMPARE(uploads.load(),2);
+        d.pollNetwork(); QTRY_COMPARE(done.size(),3); QCOMPARE(runs.load(),1); QCOMPARE(uploads.load(),2);
+    }
+    void networkOptOutCancelsTheIndependentWorker() {
+        QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_bool running{false},stopped{false}; std::atomic_int uploads{0};
+        QSignalSpy done(&d,&BetaDiagnostics::networkWorkFinished);
+        d.setAccount("network-account",[](const auto&,const auto&) { return 202; });
+        d.setNetworkTransport({"broker.example.org",443,{}},[](const auto&) {
+            return QJsonObject{{"schema",1},{"request_id",QString(32,'a')},{"expires_unix",QDateTime::currentSecsSinceEpoch()+600}};
+        },[](const auto& body,const auto&) {
+            return QJsonObject{{"schema",1},{"request_id",body.value("request_id")},{"client_instance",body.value("client_instance")},{"probe_id",QString(32,'b')}};
+        },[&](const auto&,const auto&) { ++uploads; return 202; },
+        [&](const auto&,const auto&,const auto& cancel) {
+            running=true; while (!cancel->load()) QThread::msleep(1); stopped=true; return QJsonObject();
+        });
+        d.pollNetwork(); QTRY_VERIFY(running.load());
+        QSignalSpy checkpoint(&d,&BetaDiagnostics::workFinished);
+        d.begin(); QTRY_VERIFY(checkpoint.size()>0); // the log worker stays independent.
+        d.setEnabled(false); QTRY_COMPARE(done.size(),1); QVERIFY(stopped.load()); QCOMPARE(uploads.load(),0);
+    }
+    void aSecondProcessSeesTheAcknowledgedNetworkRequest() {
+        QTemporaryDir dir; BetaDiagnostics d(dir.path()); std::atomic_int runs{0}; QSignalSpy done(&d,&BetaDiagnostics::networkWorkFinished);
+        d.setAccount("network-account",[](const auto&,const auto&) { return 202; });
+        const auto identity=QString::fromLatin1(QCryptographicHash::hash(QByteArray("network-account"),QCryptographicHash::Sha256).toHex());
+        QSettings().setValue("diagnosticNetworkCompleted/"+identity,QStringList{QString(32,'a')});
+        d.setNetworkTransport({"broker.example.org",443,{}},[](const auto&) {
+            return QJsonObject{{"schema",1},{"request_id",QString(32,'a')},{"expires_unix",QDateTime::currentSecsSinceEpoch()+600}};
+        },[&](const auto&,const auto&) { ++runs; return QJsonObject(); },[](const auto&,const auto&) { return 202; });
+        d.pollNetwork(); QTRY_COMPARE(done.size(),1); QCOMPARE(runs.load(),0);
+    }
     void redactedLogIsBoundedAndNeverCrossesAccounts() {
         DiagnosticLog::setContext("account",true);
         DiagnosticLog::append("DXGI fullscreen reset 0x887a0005\nAuthorization: Bea");

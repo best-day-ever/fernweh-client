@@ -157,6 +157,9 @@ public:
     int submitDiagnostics(const QString& sessionToken, const QJsonObject& report) const;
     QJsonObject diagnosticSupportRequest(const QString& sessionToken) const;
     int submitDiagnosticSupport(const QString& sessionToken, const QJsonObject& bundle) const;
+    QJsonObject diagnosticNetworkRequest(const QString& sessionToken) const;
+    QJsonObject startDiagnosticNetwork(const QString& sessionToken, const QJsonObject& body) const;
+    int submitDiagnosticNetwork(const QString& sessionToken, const QJsonObject& bundle) const;
     void logout(const QString& sessionToken) const;
     // A fresh password + OTP session may register one key with the user's
     // own IPA rights. The broker holds the proven password only briefly;

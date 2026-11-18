@@ -11,6 +11,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include "diagnosticnetworkprobe.h"
 
 // A separate, allowlisted diagnostic log. Never reads the ordinary text log.
 // GUI-thread lifecycle; disk/network work is serialized on one worker.
@@ -20,6 +21,8 @@ class BetaDiagnostics : public QObject {
 public:
     using Sender = std::function<int(const QJsonObject&, const std::shared_ptr<std::atomic_bool>&)>;
     using SupportPoller = std::function<QJsonObject(const std::shared_ptr<std::atomic_bool>&)>;
+    using NetworkStarter = std::function<QJsonObject(const QJsonObject&, const std::shared_ptr<std::atomic_bool>&)>;
+    using NetworkRunner = std::function<QJsonObject(const DiagnosticNetworkProbe::Endpoint&, const QJsonObject&, const std::shared_ptr<std::atomic_bool>&)>;
     explicit BetaDiagnostics(QString directory, QObject* parent = nullptr);
     ~BetaDiagnostics() override;
     bool enabled() const { return m_Enabled; }
@@ -27,6 +30,9 @@ public:
     void setAccount(const QString& identity, Sender sender);
     void setSupportTransport(SupportPoller poller, Sender sender);
     void pollSupport();
+    void setNetworkTransport(DiagnosticNetworkProbe::Endpoint endpoint, SupportPoller poller,
+                             NetworkStarter starter, Sender sender, NetworkRunner runner = {});
+    void pollNetwork();
     void begin();
     void recordEvent(const QString& kind, int code = 0);
     void sample(float fps, float videoMbps, quint32 rttMs, quint32 receivedAgeMs = 0, quint32 statisticsAgeMs = 0);
@@ -45,6 +51,7 @@ public:
 signals:
     void changed();
     void workFinished();
+    void networkWorkFinished();
 private:
     void dispatchWrite();
     void completeWork();
@@ -54,7 +61,17 @@ private:
     SupportPoller m_SupportPoller;
     Sender m_SupportSender;
     QStringList m_CompletedSupport;
+    QStringList m_CompletedInstanceSupport;
     QJsonObject m_LastReport;
+    DiagnosticNetworkProbe::Endpoint m_NetworkEndpoint;
+    SupportPoller m_NetworkPoller;
+    NetworkStarter m_NetworkStarter;
+    Sender m_NetworkSender;
+    NetworkRunner m_NetworkRunner;
+    QStringList m_CompletedNetwork;
+    QJsonObject m_NetworkPending;
+    QString m_NetworkInstance;
+    bool m_NetworkBusy = false;
     bool m_SupportPollPending = false;
     bool m_Enabled = true, m_Active = false, m_Busy = false, m_Failed = false, m_StallReported = false;
     bool m_StatisticsObserved = false, m_RendererProgressObserved = false;
@@ -63,8 +80,10 @@ private:
     QList<PendingWrite> m_Pending;
     std::shared_ptr<QLockFile> m_ActiveLock;
     QElapsedTimer m_Elapsed;
-    QTimer m_Checkpoint, m_Upload, m_SupportPoll;
+    QTimer m_Checkpoint, m_Upload, m_SupportPoll, m_NetworkPoll;
     QThreadPool m_Worker;
+    QThreadPool m_NetworkWorker;
     std::shared_ptr<std::atomic_bool> m_Cancel = std::make_shared<std::atomic_bool>(true);
     std::shared_ptr<std::atomic_bool> m_SupportCancel = std::make_shared<std::atomic_bool>(true);
+    std::shared_ptr<std::atomic_bool> m_NetworkCancel = std::make_shared<std::atomic_bool>(true);
 };
