@@ -34,7 +34,7 @@ private slots:
                 << "owner thread" << GetWindowThreadProcessId(handle(window),nullptr)
                 << "native visible" << IsWindowVisible(handle(window)) << "iconic" << IsIconic(handle(window));
         QVERIFY(IsWindow(handle(window)));
-        QVERIFY(IsWindowVisible(handle(window)));
+        QVERIFY2(IsWindowVisible(handle(window)), "Run windowsplatform on the signed-in user desktop; an SSH window station cannot qualify visibility.");
         bool visible=true;
         auto overlay=PlankWin32Cursor::create([&](SDL_Window*& target,int& x,int& y){target=window;x=100;y=120;return visible;});
         QVERIFY(overlay);
@@ -45,6 +45,12 @@ private slots:
         QVERIFY(style&WS_EX_NOACTIVATE); QVERIFY(style&WS_EX_TRANSPARENT); QVERIFY(style&WS_EX_LAYERED);
         QCOMPARE(GetForegroundWindow(),foreground);
         QCOMPARE(SendMessageW(native,WM_NCHITTEST,0,0),LRESULT(HTTRANSPARENT));
+        SDL_Window* second=SDL_CreateWindow("Fernweh second isolated output",400,300,SDL_WINDOW_HIDDEN);
+        QVERIFY(second); windows.push_back(second);
+        QVERIFY(PlankWindow::showWithoutActivation(second));
+        const auto old=native; window=second; overlay->update(); native=findOverlay();
+        QVERIFY(native); QVERIFY(!IsWindow(old)); QCOMPARE(GetWindow(native,GW_OWNER),handle(second));
+        QCOMPARE(GetForegroundWindow(),foreground);
         visible=false;overlay->update();QVERIFY(!IsWindowVisible(native));
         overlay.reset();QVERIFY(!IsWindow(native));
     }
