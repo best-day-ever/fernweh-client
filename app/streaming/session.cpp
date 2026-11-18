@@ -2475,7 +2475,8 @@ void Session::rebuildPresentationLayout()
     }
 
     const bool multiOutputActive = m_UseMultiDisplayPresentation &&
-            (m_PresentationFullscreen || strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0) &&
+            (m_PresentationFullscreen || strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0 ||
+             strcmp(SDL_GetCurrentVideoDriver(), "windows") == 0) &&
             !m_SecondaryWindows.isEmpty();
     if (multiOutputActive) {
         int canvasWidth = 0;
@@ -2732,6 +2733,8 @@ void Session::rebuildCollaborationPresentation()
 bool Session::createSecondaryWindows(Uint32 defaultWindowFlags, const std::string& windowName)
 {
     const bool cocoa = strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0;
+    const bool windows = strcmp(SDL_GetCurrentVideoDriver(), "windows") == 0;
+    const bool prepareWindowed = cocoa || windows;
     for (const auto& display : std::as_const(m_ClientDisplays)) {
         if (display.displayId == m_TargetDisplayId ||
                 (m_DisplayPlan.ok && display.planIndex < 0)) {
@@ -2743,7 +2746,7 @@ bool Session::createSecondaryWindows(Uint32 defaultWindowFlags, const std::strin
         // later, one at a time (setPresentationWindowsFullscreen). Create it
         // windowed and hidden there first.
         const Uint32 flags = (defaultWindowFlags & ~SDL_WINDOW_FULLSCREEN) |
-                (cocoa ? SDL_WINDOW_HIDDEN : 0) |
+                (prepareWindowed ? SDL_WINDOW_HIDDEN : 0) |
                 StreamUtils::getPlatformWindowFlags();
         SDL_SetStringProperty(properties,
                               SDL_PROP_WINDOW_CREATE_TITLE_STRING,
@@ -2765,7 +2768,19 @@ bool Session::createSecondaryWindows(Uint32 defaultWindowFlags, const std::strin
                               flags);
         SDL_SetBooleanProperty(properties,
                                SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
-                               !cocoa);
+                               !prepareWindowed);
+        if (windows) {
+            SDL_Rect usable = display.logicalBounds;
+            SDL_GetDisplayUsableBounds(display.displayId, &usable);
+            const QSize source = m_DisplayPlan.ok && display.planIndex >= 0 ?
+                    m_DisplayPlan.outputs.at(display.planIndex).size : display.nativeSize;
+            const auto rect = PlankPresentation::windowedOutputRect(
+                    QRect(usable.x, usable.y, usable.w, usable.h), source);
+            SDL_SetNumberProperty(properties, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, rect.width());
+            SDL_SetNumberProperty(properties, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, rect.height());
+            SDL_SetNumberProperty(properties, SDL_PROP_WINDOW_CREATE_X_NUMBER, rect.x());
+            SDL_SetNumberProperty(properties, SDL_PROP_WINDOW_CREATE_Y_NUMBER, rect.y());
+        }
         SDL_Window* secondary = SDL_CreateWindowWithProperties(properties);
         SDL_DestroyProperties(properties);
         if (secondary == nullptr) {
@@ -2777,7 +2792,7 @@ bool Session::createSecondaryWindows(Uint32 defaultWindowFlags, const std::strin
             destroySecondaryWindows();
             return false;
         }
-        if (!cocoa) {
+        if (!prepareWindowed) {
             SDL_SetWindowFullscreenMode(secondary, nullptr);
             SDL_SetWindowFullscreen(secondary, true);
             if (!placeFullscreenWindowOnDisplay(secondary,
@@ -3148,6 +3163,19 @@ void Session::setPresentationWindowsFullscreen(bool fullscreen)
             continue;
         }
 #endif
+#ifdef Q_OS_WIN
+        if (strcmp(SDL_GetCurrentVideoDriver(), "windows") == 0) {
+            SDL_SetWindowFullscreenMode(window, nullptr);
+            if (!SDL_SetWindowFullscreen(window, fullscreen) || !SDL_SyncWindow(window))
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Could not change a Windows monitor presentation: %s", SDL_GetError());
+            // Showing a secondary monitor must not steal keyboard focus.
+            const auto handle = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                    SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+            if (handle) ShowWindow(handle, SW_SHOWNOACTIVATE);
+            ++secondaryIndex;
+            continue;
+        }
+#endif
         if (fullscreen) {
             SDL_ShowWindow(window);
             if (!SDL_SetWindowFullscreen(window, m_FullScreenFlag)) {
@@ -3387,9 +3415,7 @@ bool Session::planDisplayArrangement(const QVector<NvClientDisplay>& displays, i
 #else
     const char* driver = SDL_GetCurrentVideoDriver();
     // Cocoa can prepare hidden per-display windows even when starting windowed.
-    limits.separateWindows = driver != nullptr &&
-            (strcmp(driver, "cocoa") == 0 ||
-             (m_IsFullScreen && (strcmp(driver, "wayland") == 0 || strcmp(driver, "windows") == 0)));
+    limits.separateWindows = PlankPresentation::supportsSeparateWindows(driver, m_IsFullScreen);
 #endif
     DisplayProfile::Resolved resolved = displayProfileFor(displays);
     if (resolved.source == DisplayProfile::Resolved::Legacy) {

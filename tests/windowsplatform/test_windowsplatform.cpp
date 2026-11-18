@@ -28,6 +28,11 @@ private slots:
         auto* window=SDL_CreateWindow("Fernweh isolated cursor test",640,480,SDL_WINDOW_HIDDEN);
         QVERIFY(window); windows.push_back(window);
         ShowWindow(handle(window),SW_SHOWNOACTIVATE);
+        qInfo() << "driver" << SDL_GetCurrentVideoDriver() << "thread" << GetCurrentThreadId()
+                << "owner thread" << GetWindowThreadProcessId(handle(window),nullptr)
+                << "native visible" << IsWindowVisible(handle(window)) << "iconic" << IsIconic(handle(window));
+        QVERIFY(IsWindow(handle(window)));
+        QVERIFY(IsWindowVisible(handle(window)));
         bool visible=true;
         auto overlay=PlankWin32Cursor::create([&](SDL_Window*& target,int& x,int& y){target=window;x=100;y=120;return visible;});
         QVERIFY(overlay);

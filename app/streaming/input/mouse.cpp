@@ -44,6 +44,7 @@ void SdlInputHandler::routePresentationPointer(SDL_Window*& window, float& x, fl
 void SdlInputHandler::handleMouseButtonEvent(SDL_MouseButtonEvent* event)
 {
 #if defined(Q_OS_WIN)
+    if (nativePenOwnsPointer()) return;
     // SDL promotes Windows Ink pen input to mouse input as well. Forward
     // only the pen/raw transport so a pressure stroke cannot click twice.
     if (event->which == SDL_PEN_MOUSEID && (m_SdlPenInput || (m_WindowsRawWacomInput && m_WindowsRawWacomInput->attached()))) return;
@@ -154,6 +155,7 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event,
                                              bool batchPendingEvents)
 {
 #if defined(Q_OS_WIN)
+    if (nativePenOwnsPointer()) return;
     // SDL promotes Windows Ink pen input to mouse input as well. Forward
     // only the pen/raw transport so a pressure stroke cannot click twice.
     if (event->which == SDL_PEN_MOUSEID && (m_SdlPenInput || (m_WindowsRawWacomInput && m_WindowsRawWacomInput->attached()))) return;
@@ -303,6 +305,7 @@ bool SdlInputHandler::sendAbsoluteMousePosition(
 void SdlInputHandler::handleMouseWheelEvent(SDL_MouseWheelEvent* event)
 {
 #if defined(Q_OS_WIN)
+    if (nativePenOwnsPointer()) return;
     // SDL promotes Windows Ink pen input to mouse input as well. Forward
     // only the pen/raw transport so a pressure stroke cannot click twice.
     if (event->which == SDL_PEN_MOUSEID && (m_SdlPenInput || (m_WindowsRawWacomInput && m_WindowsRawWacomInput->attached()))) return;

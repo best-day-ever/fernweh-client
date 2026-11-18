@@ -19,6 +19,12 @@ private slots:
         position.reset();
         QCOMPARE(position.sample(20, 22.5), 20.5f);
     }
+    void mouseReturnsAfterHoverButNeverCancelsHeldStroke() {
+        QVERIFY(WindowsPenLogic::ownsPointer(true, .1f, 100, 10000));
+        QVERIFY(WindowsPenLogic::ownsPointer(true, 0, 100, 399));
+        QVERIFY(!WindowsPenLogic::ownsPointer(true, 0, 100, 400));
+        QVERIFY(!WindowsPenLogic::ownsPointer(false, .1f, 100, 100));
+    }
     void inkAndWintabHaveOnePositionOwner() {
         WindowsPenLogic::Authority authority;
         authority.ink(100);

@@ -4,6 +4,9 @@
 #include <cstdint>
 
 namespace WindowsPenLogic {
+inline bool ownsPointer(bool driving, float pressure, std::uint64_t lastPacket, std::uint64_t now) {
+    return driving && (pressure > 0 || (now >= lastPacket && now - lastPacket < 300));
+}
 // Inspired by the native sampling/WinTab fixes in Culley Bunker's SkulleyFX
 // client (8280fc48). Keep driver mapping authoritative and bound fractions.
 class FractionalPosition {

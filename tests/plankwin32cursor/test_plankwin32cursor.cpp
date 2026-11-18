@@ -21,7 +21,7 @@ private slots:
     }
     void windowsPresentationKeepsPrecision() {
         QVERIFY(PlankPresentation::supportsSeparateWindows("windows", true));
-        QVERIFY(!PlankPresentation::supportsSeparateWindows("windows", false));
+        QVERIFY(PlankPresentation::supportsSeparateWindows("windows", false));
         QVERIFY(PlankPresentation::supportsSeparateWindows("cocoa", false));
         QVERIFY(!PlankPresentation::supportsSeparateWindows(nullptr, true));
         QVERIFY(PlankPresentation::preservesPrecision(10,10,10,10));

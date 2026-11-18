@@ -67,9 +67,7 @@ private:
 
     Microsoft::WRL::ComPtr<IDXGIFactory5> m_Factory;
     Microsoft::WRL::ComPtr<ID3D11Device> m_Device;
-    Microsoft::WRL::ComPtr<IDXGISwapChain4> m_SwapChain;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_DeviceContext;
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_RenderTargetView;
     SupportedFenceType m_FenceType;
     SDL_Mutex* m_ContextLock;
     bool m_BindDecoderOutputTextures;
@@ -85,7 +83,6 @@ private:
     AVColorTransferCharacteristic m_LastColorTrc;
 
     bool m_AllowTearing;
-    DxgiPresentation m_Presentation;
     bool m_LastPresentationAccepted = false;
 
     std::array<Microsoft::WRL::ComPtr<ID3D11PixelShader>, PixelShaders::_COUNT> m_VideoPixelShaders;

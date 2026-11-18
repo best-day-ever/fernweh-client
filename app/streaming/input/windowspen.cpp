@@ -109,7 +109,8 @@ struct WindowsPenInput::Impl {
     HWND contextWindow = nullptr;
     float pressureMin = 0, pressureRange = 1, pressure = 0;
     bool pressureValid = false, waitForLift = false, driving = false, forwarded = false;
-    Uint64 lastInk = 0;
+    Uint64 lastInk = 0, lastPacket = 0;
+    float inkTiltX = 0, inkTiltY = 0;
     Uint32 inkPen = 1;
     unsigned buttons = 0;
     bool eraser = false;
@@ -206,6 +207,7 @@ struct WindowsPenInput::Impl {
         sample.x = x; sample.y = y;
         sample.pressure = canDrive && !authority.acceptsContact() ? 0 : pressure;
         sample.contact = sample.pressure > 0;
+        sample.tiltX = inkTiltX; sample.tiltY = inkTiltY;
         if (buttons & 2) sample.flags |= SDL_PEN_INPUT_BUTTON_1;
         if (buttons & 4) sample.flags |= SDL_PEN_INPUT_BUTTON_2;
         if (eraser) sample.flags |= SDL_PEN_INPUT_ERASER_TIP;
@@ -216,6 +218,7 @@ struct WindowsPenInput::Impl {
         if (context && msg->message == Wintab::WT_PACKET && reinterpret_cast<Wintab::HCTX>(msg->lParam) == context) {
             Wintab::PACKET data{};
             if (packet(context, UINT(msg->wParam), &data)) {
+                lastPacket = SDL_GetTicks();
                 pressureValid = (data.pkStatus & Wintab::TPS_PROXIMITY) == 0;
                 pressure = std::clamp((float(data.pkNormalPressure) - pressureMin) / pressureRange, 0.0f, 1.0f);
                 buttons = unsigned(data.pkButtons); eraser = data.pkCursor % 3 == 2;
@@ -257,10 +260,15 @@ struct WindowsPenInput::Impl {
             sample.x = fractionX.sample(sample.x, mappedX); sample.y = fractionY.sample(sample.y, mappedY);
         }
         toWindowPoints(target, sample.x, sample.y);
+        if (msg->message == WM_POINTERUP && pressureValid && lastInk - lastPacket >= 250) pressureValid = false;
         sample.pressure = pressureValid ? pressure : (pen.penMask & PEN_MASK_PRESSURE ? float(pen.pressure) / 1024 : 1.0f);
         sample.contact = pressureValid ? pressure > 0 : (pen.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT) != 0;
         if (!sample.contact) sample.pressure = 0;
-        sample.tiltX = float(pen.tiltX); sample.tiltY = float(pen.tiltY);
+        sample.tiltX = inkTiltX = float(pen.tiltX); sample.tiltY = inkTiltY = float(pen.tiltY);
+        if (pressureValid) {
+            if (buttons & 2) sample.flags |= SDL_PEN_INPUT_BUTTON_1;
+            if (buttons & 4) sample.flags |= SDL_PEN_INPUT_BUTTON_2;
+        }
         if (pen.penFlags & PEN_FLAG_BARREL) sample.flags |= SDL_PEN_INPUT_BUTTON_1;
         if (pen.penFlags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER)) sample.flags |= SDL_PEN_INPUT_ERASER_TIP;
         enqueue(sample);
@@ -291,11 +299,17 @@ void WindowsPenInput::poll() {
     float x = 0, y = 0;
     if (auto* target = state.cursorWindow(x, y)) state.openContext(Impl::hwnd(target));
     else { state.reset(); return; }
-    if (state.pressureValid && !state.driving && (!state.lastInk || SDL_GetTicks() - state.lastInk >= 250)) state.wintabSample();
+    if (state.driving && !WindowsPenLogic::ownsPointer(true, state.pressure, state.lastPacket, SDL_GetTicks())) state.driving = false;
+    if (state.pressureValid && SDL_GetTicks() - state.lastPacket < 300 && !state.driving && (!state.lastInk || SDL_GetTicks() - state.lastInk >= 250)) state.wintabSample();
     while (!state.queue.empty()) {
         const auto sample = state.queue.front(); state.queue.pop_front();
         if (!state.allowed()) { state.reset(); return; }
         state.forwarded = !sample.leave && !sample.cancel;
         state.sink(sample);
     }
+}
+
+bool WindowsPenInput::ownsPointer() const {
+    return m_Impl->allowed() && WindowsPenLogic::ownsPointer(m_Impl->driving, m_Impl->pressure,
+                                                            m_Impl->lastPacket, SDL_GetTicks());
 }

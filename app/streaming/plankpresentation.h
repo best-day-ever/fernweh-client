@@ -127,8 +127,8 @@ class PlankPresentation
 {
 public:
     static bool supportsSeparateWindows(const char* driver, bool fullscreen, bool qtFrontend = false) {
-        return qtFrontend || (driver && (std::strcmp(driver, "cocoa") == 0 ||
-            (fullscreen && (std::strcmp(driver, "windows") == 0 || std::strcmp(driver, "wayland") == 0))));
+        return qtFrontend || (driver && (std::strcmp(driver, "cocoa") == 0 || std::strcmp(driver, "windows") == 0 ||
+            (fullscreen && std::strcmp(driver, "wayland") == 0)));
     }
     static bool preservesPrecision(int requiredBits, int red, int green, int blue) {
         return red >= requiredBits && green >= requiredBits && blue >= requiredBits;

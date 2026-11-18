@@ -23,6 +23,7 @@ public:
     void poll();
     void reset();
     bool handlesPenEvents() const;
+    bool ownsPointer() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> m_Impl;

@@ -62,7 +62,7 @@ struct Limits
     // fullscreen window on every display.
     bool separateSpaces = true;
     // This client can put a fullscreen window on every display (fullscreen
-    // on macOS or Wayland). A packed capture needs one window per display:
+    // on macOS, Windows or Wayland). A packed capture needs one window per display:
     // one window would show the rows, not the desk.
     bool separateWindows = true;
 };

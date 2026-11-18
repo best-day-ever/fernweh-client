@@ -139,8 +139,6 @@ D3D11VARenderer::~D3D11VARenderer()
 
     m_OverlayPixelShader.Reset();
 
-    m_RenderTargetView.Reset();
-    m_SwapChain.Reset();
 
     av_buffer_unref(&m_HwFramesContext);
     av_buffer_unref(&m_HwDeviceContext);
@@ -514,7 +512,6 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
         }
     }
 
-    m_SwapChain = m_Targets.front().swapChain;
     m_DisplayWidth = m_Targets.front().width;
     m_DisplayHeight = m_Targets.front().height;
     if (m_Targets.size() > 1) {
@@ -972,6 +969,12 @@ void D3D11VARenderer::notifyOverlayUpdated(Overlay::OverlayType type)
         renderRect.y = m_DisplayHeight - newSurface->h;
     }
 
+    if (type == Overlay::OverlayToolbar) {
+        renderRect.x = Session::get()->getOverlayManager().getOverlayHorizontalPosition(type) *
+                       std::max(0, m_DisplayWidth - newSurface->w);
+        renderRect.y = m_DisplayHeight - newSurface->h;
+    }
+
     renderRect.w = newSurface->w;
     renderRect.h = newSurface->h;
 
@@ -1301,7 +1304,6 @@ bool D3D11VARenderer::setupRenderingResources()
         hr = target.swapChain->GetBuffer(0, __uuidof(ID3D11Resource), reinterpret_cast<void**>(buffer.GetAddressOf()));
         if (FAILED(hr) || FAILED(m_Device->CreateRenderTargetView(buffer.Get(), nullptr, &target.renderTargetView))) return false;
     }
-    m_RenderTargetView = m_Targets.front().renderTargetView;
     if (m_DecoderParams.enableIdentityGbr &&
             !D3D11Identity::createShader(m_Device.Get(), (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0, &m_IdentityPixelShader)) return false;
 

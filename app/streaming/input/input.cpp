@@ -1513,3 +1513,10 @@ void SdlInputHandler::pollWindowsPen()
     m_WindowsPenInput->poll();
 }
 #endif
+
+#ifdef Q_OS_WIN
+bool SdlInputHandler::nativePenOwnsPointer() const
+{
+    return m_WindowsPenInput && m_WindowsPenInput->ownsPointer();
+}
+#endif

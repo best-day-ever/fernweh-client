@@ -316,6 +316,7 @@ private:
     void updateWindowsCursor();
     void pollWindowsPen();
     bool windowsPenAllowed();
+    bool nativePenOwnsPointer() const;
     std::uint64_t m_WindowsCursorGeneration = UINT64_MAX;
     std::unique_ptr<WindowsPenInput> m_WindowsPenInput;
 #endif
