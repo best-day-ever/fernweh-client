@@ -19,9 +19,10 @@
 #include <array>
 #include <limits>
 #ifdef Q_OS_WIN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <iphlpapi.h>
-#include <netioapi.h>
 #else
 #include <sys/resource.h>
 #ifdef Q_OS_MACOS
