@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_system.h>
 #include "streaming/plankwin32cursor.h"
+#include "streaming/windowshow.h"
 #include "streaming/input/windowspen.h"
 
 class TestWindowsPlatform : public QObject {
@@ -27,7 +28,8 @@ private slots:
         const HWND foreground=GetForegroundWindow();
         auto* window=SDL_CreateWindow("Fernweh isolated cursor test",640,480,SDL_WINDOW_HIDDEN);
         QVERIFY(window); windows.push_back(window);
-        ShowWindow(handle(window),SW_SHOWNOACTIVATE);
+        QVERIFY(PlankWindow::showWithoutActivation(window));
+        SDL_PumpEvents();
         qInfo() << "driver" << SDL_GetCurrentVideoDriver() << "thread" << GetCurrentThreadId()
                 << "owner thread" << GetWindowThreadProcessId(handle(window),nullptr)
                 << "native visible" << IsWindowVisible(handle(window)) << "iconic" << IsIconic(handle(window));

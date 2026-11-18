@@ -444,7 +444,7 @@ HEADERS += streaming/input/pentiltencoding.h
 
 win32 {
     SOURCES += streaming/plankwin32cursor.cpp
-    HEADERS += streaming/plankwin32cursor.h streaming/plankwin32cursorlogic.h
+    HEADERS += streaming/plankwin32cursor.h streaming/plankwin32cursorlogic.h streaming/windowshow.h
     SOURCES += streaming/input/windowspen.cpp
     HEADERS += streaming/input/windowspen.h streaming/input/windowspenlogic.h
     SOURCES += streaming/input/windowsrawwacom.cpp

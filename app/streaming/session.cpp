@@ -25,6 +25,7 @@
 #include "streaming/input/plankmousemotion.h"
 #include "streaming/input/penmetrics.h"
 #include "streaming/streamutils.h"
+#include "streaming/windowshow.h"
 #include "backend/clientdisplayprobe.h"
 #include "backend/displayprofile.h"
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
@@ -3168,10 +3169,8 @@ void Session::setPresentationWindowsFullscreen(bool fullscreen)
             SDL_SetWindowFullscreenMode(window, nullptr);
             if (!SDL_SetWindowFullscreen(window, fullscreen) || !SDL_SyncWindow(window))
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Could not change a Windows monitor presentation: %s", SDL_GetError());
-            // Showing a secondary monitor must not steal keyboard focus.
-            const auto handle = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
-                    SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-            if (handle) ShowWindow(handle, SW_SHOWNOACTIVATE);
+            if (!PlankWindow::showWithoutActivation(window))
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Could not show a secondary Windows monitor without activation: %s", SDL_GetError());
             ++secondaryIndex;
             continue;
         }
