@@ -2,6 +2,8 @@
 #include <initguid.h>
 
 #include "d3d11va.h"
+#include "d3d11identity.h"
+#include <algorithm>
 #include "dxutil.h"
 #include "path.h"
 
@@ -109,7 +111,8 @@ D3D11VARenderer::~D3D11VARenderer()
 
     SDL_DestroyMutex(m_ContextLock);
 
-    m_VideoVertexBuffer.Reset();
+    m_Targets.clear();
+    m_IdentityPixelShader.Reset();
     for (auto& shader : m_VideoPixelShaders) {
         shader.Reset();
     }
@@ -436,47 +439,89 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
         }
     }
 
-    HWND windowHandle = static_cast<HWND>(SDL_GetPointerProperty(
-        SDL_GetWindowProperties(params->window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-    if (windowHandle == nullptr) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to get the SDL window HWND: %s", SDL_GetError());
-        return false;
+    // Build the list of windows to present into. A two-screen session has one
+    // per monitor; everything else has a single window.
+    m_Targets.clear();
+    if (params->presentationLayout != nullptr && params->presentationLayout->isMultiOutput()) {
+        m_PresentationCanvasSize = params->presentationLayout->canvasSize;
+        for (const auto& output : params->presentationLayout->outputs) {
+            PresentationTarget target;
+            target.window = output.window;
+            target.canvasRect = output.canvasRect;
+            target.primary = output.primary;
+            if (params->presentationLayout->usesSourceRects()) target.sourceRect = output.sourceRect;
+            m_Targets.push_back(target);
+        }
     }
+    else {
+        PresentationTarget target;
+        target.window = params->window;
+        target.canvasRect = QRect(0, 0, swapChainDesc.Width, swapChainDesc.Height);
+        target.primary = true;
+        m_PresentationCanvasSize = QSize(swapChainDesc.Width, swapChainDesc.Height);
+        m_Targets.push_back(target);
+    }
+
+    std::stable_sort(m_Targets.begin(), m_Targets.end(), [](const auto& a, const auto& b) { return a.primary && !b.primary; });
+
+    for (auto& target : m_Targets) {
+        target.hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(target.window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        if (target.hwnd == nullptr) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "Unable to get HWND from SDL window: %s",
+                         SDL_GetError());
+            return false;
+        }
+        SDL_GetWindowSizeInPixels(target.window, &target.width, &target.height);
+    }
+
 
     // Always use windowed or borderless windowed mode.. SDL does mode-setting for us in
     // full-screen exclusive mode (SDL_WINDOW_FULLSCREEN), so this actually works out okay.
-    ComPtr<IDXGISwapChain1> swapChain;
-    hr = m_Factory->CreateSwapChainForHwnd(m_Device.Get(),
-                                           windowHandle,
-                                           &swapChainDesc,
-                                           nullptr,
-                                           nullptr,
-                                           &swapChain);
+    for (auto& target : m_Targets) {
+        DXGI_SWAP_CHAIN_DESC1 targetDesc = swapChainDesc;
+        targetDesc.Width = target.width;
+        targetDesc.Height = target.height;
 
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "IDXGIFactory::CreateSwapChainForHwnd() failed: %x",
-                     hr);
-        return false;
+        ComPtr<IDXGISwapChain1> swapChain;
+        hr = m_Factory->CreateSwapChainForHwnd(m_Device.Get(),
+                                               target.hwnd,
+                                               &targetDesc,
+                                               nullptr,
+                                               nullptr,
+                                               &swapChain);
+        if (FAILED(hr)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "IDXGIFactory::CreateSwapChainForHwnd() failed: %x",
+                         hr);
+            return false;
+        }
+
+        hr = swapChain.As(&target.swapChain);
+        if (FAILED(hr)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "IDXGISwapChain::QueryInterface(IDXGISwapChain4) failed: %x",
+                         hr);
+            return false;
+        }
+
+        hr = m_Factory->MakeWindowAssociation(target.hwnd, DXGI_MWA_NO_WINDOW_CHANGES);
+        if (FAILED(hr)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "IDXGIFactory::MakeWindowAssociation() failed: %x",
+                         hr);
+            return false;
+        }
     }
 
-    hr = swapChain.As(&m_SwapChain);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "IDXGISwapChain::QueryInterface(IDXGISwapChain4) failed: %x",
-                     hr);
-        return false;
-    }
-
-    // Disable Alt+Enter, PrintScreen, and window message snooping. This makes
-    // it safe to run the renderer on a separate rendering thread rather than
-    // requiring the main (message loop) thread.
-    hr = m_Factory->MakeWindowAssociation(windowHandle, DXGI_MWA_NO_WINDOW_CHANGES);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "IDXGIFactory::MakeWindowAssociation() failed: %x",
-                     hr);
-        return false;
+    m_SwapChain = m_Targets.front().swapChain;
+    m_DisplayWidth = m_Targets.front().width;
+    m_DisplayHeight = m_Targets.front().height;
+    if (m_Targets.size() > 1) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Direct3D presentation on %d windows across a %dx%d canvas",
+                    (int) m_Targets.size(),
+                    m_PresentationCanvasSize.width(), m_PresentationCanvasSize.height());
     }
 
     // Surfaces must be 16 pixel aligned for H.264 and 128 pixel aligned for everything else
@@ -599,76 +644,35 @@ bool D3D11VARenderer::prepareDecoderContextInGetFormat(AVCodecContext *context, 
 
 void D3D11VARenderer::renderFrame(AVFrame* frame)
 {
-    m_LastPresentationAccepted = false;
-    // Acquire the context lock for rendering to prevent concurrent
-    // access from inside FFmpeg's decoding code
     lockContext(this);
-
-    // Clear the back buffer
-    const float clearColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    m_DeviceContext->ClearRenderTargetView(m_RenderTargetView.Get(), clearColor);
-
-    // Bind the back buffer. This needs to be done each time,
-    // because the render target view will be unbound by Present().
-    m_DeviceContext->OMSetRenderTargets(1, m_RenderTargetView.GetAddressOf(), nullptr);
-
-    // Render our video frame with the aspect-ratio adjusted viewport
-    renderVideo(frame);
-
-    // Render overlays on top of the video stream
-    for (int i = 0; i < Overlay::OverlayMax; i++) {
-        renderOverlay((Overlay::OverlayType)i);
-    }
-
-    if (m_AllowTearing) {
-        SDL_assert(!m_DecoderParams.enableVsync);
-    }
-
-    HRESULT hr;
-
-    if (frame->color_trc != m_LastColorTrc) {
-        if (frame->color_trc == AVCOL_TRC_SMPTE2084) {
-            // Switch to Rec 2020 PQ (SMPTE ST 2084) colorspace for HDR10 rendering
-            hr = m_SwapChain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
-            if (FAILED(hr)) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                             "IDXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) failed: %x",
-                             hr);
-            }
+    m_LastPresentationAccepted = false;
+    bool reset = false;
+    const auto color = frame->color_trc == AVCOL_TRC_SMPTE2084 ?
+            DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    for (auto& target : m_Targets) {
+        if (!target.renderTargetView || !target.vertexBuffer) continue;
+        const float clear[4] = {};
+        m_DeviceContext->ClearRenderTargetView(target.renderTargetView.Get(), clear);
+        m_DeviceContext->OMSetRenderTargets(1, target.renderTargetView.GetAddressOf(), nullptr);
+        D3D11_VIEWPORT viewport{};
+        viewport.Width = float(target.width); viewport.Height = float(target.height); viewport.MaxDepth = 1;
+        m_DeviceContext->RSSetViewports(1, &viewport);
+        renderVideo(frame, target.vertexBuffer.Get());
+        if (target.primary) for (int i = 0; i < Overlay::OverlayMax; ++i) renderOverlay(Overlay::OverlayType(i));
+        if (frame->color_trc != m_LastColorTrc && FAILED(target.swapChain->SetColorSpace1(color))) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not set color space on a Windows presentation output");
+            reset = true; continue;
         }
-        else {
-            // Restore default sRGB colorspace
-            hr = m_SwapChain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-            if (FAILED(hr)) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                             "IDXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709) failed: %x",
-                             hr);
-            }
-        }
-
-        m_LastColorTrc = frame->color_trc;
+        const auto result = target.presentation.submit(m_AllowTearing,
+            [&target](UINT interval, UINT flags) { return target.swapChain->Present(interval, flags); });
+        m_LastPresentationAccepted |= result == DxgiPresentation::Accepted;
+        reset |= result == DxgiPresentation::RequestReset;
     }
-
-    // Serialize DXGI with the shared immediate context. DO_NOT_WAIT avoids
-    // retaining that lock while DXGI waits for swap-chain capacity. A busy or
-    // occluded window simply drops this presentation; the next frame retries.
-    const auto presentation = m_Presentation.submit(m_AllowTearing,
-        [this](UINT interval, UINT flags) { return m_SwapChain->Present(interval, flags); });
-    m_LastPresentationAccepted = presentation == DxgiPresentation::Accepted;
-
-    // Release the context lock
+    if (!reset) m_LastColorTrc = frame->color_trc;
     unlockContext(this);
-
-    if (presentation == DxgiPresentation::RequestReset) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "IDXGISwapChain::Present() failed: %x",
-                     m_Presentation.lastResult());
-
-        // The card may have been removed or crashed. Reset the decoder.
-        SDL_Event event;
-        event.type = SDL_EVENT_RENDER_DEVICE_RESET;
-        if (SDL_PushEvent(&event)) m_Presentation.resetQueued();
-        return;
+    if (reset) {
+        SDL_Event event{}; event.type = SDL_EVENT_RENDER_DEVICE_RESET;
+        if (SDL_PushEvent(&event)) for (auto& target : m_Targets) target.presentation.resetQueued();
     }
 }
 
@@ -713,6 +717,10 @@ void D3D11VARenderer::renderOverlay(Overlay::OverlayType type)
 
 void D3D11VARenderer::bindColorConversion(AVFrame* frame)
 {
+    if (m_DecoderParams.enableIdentityGbr) {
+        m_DeviceContext->PSSetShader(m_IdentityPixelShader.Get(), nullptr, 0);
+        return;
+    }
     bool fullRange = isFrameFullRange(frame);
     int colorspace = getFrameColorspace(frame);
     bool yuv444 = (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_YUV444);
@@ -814,12 +822,12 @@ void D3D11VARenderer::bindColorConversion(AVFrame* frame)
     m_LastFullRange = fullRange;
 }
 
-void D3D11VARenderer::renderVideo(AVFrame* frame)
+void D3D11VARenderer::renderVideo(AVFrame* frame, ID3D11Buffer* vertices)
 {
     // Bind video rendering vertex buffer
     UINT stride = sizeof(VERTEX);
     UINT offset = 0;
-    m_DeviceContext->IASetVertexBuffers(0, 1, m_VideoVertexBuffer.GetAddressOf(), &stride, &offset);
+    m_DeviceContext->IASetVertexBuffers(0, 1, &vertices, &stride, &offset);
 
     UINT srvIndex;
     if (m_BindDecoderOutputTextures) {
@@ -1288,25 +1296,14 @@ bool D3D11VARenderer::setupRenderingResources()
         }
     }
 
-    // Create our render target view
-    {
-        ComPtr<ID3D11Resource> backBufferResource;
-        hr = m_SwapChain->GetBuffer(0, __uuidof(ID3D11Resource), (void**)&backBufferResource);
-        if (FAILED(hr)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "IDXGISwapChain::GetBuffer() failed: %x",
-                         hr);
-            return false;
-        }
-
-        hr = m_Device->CreateRenderTargetView(backBufferResource.Get(), nullptr, &m_RenderTargetView);
-        if (FAILED(hr)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "ID3D11Device::CreateRenderTargetView() failed: %x",
-                         hr);
-            return false;
-        }
+    for (auto& target : m_Targets) {
+        ComPtr<ID3D11Resource> buffer;
+        hr = target.swapChain->GetBuffer(0, __uuidof(ID3D11Resource), reinterpret_cast<void**>(buffer.GetAddressOf()));
+        if (FAILED(hr) || FAILED(m_Device->CreateRenderTargetView(buffer.Get(), nullptr, &target.renderTargetView))) return false;
     }
+    m_RenderTargetView = m_Targets.front().renderTargetView;
+    if (m_DecoderParams.enableIdentityGbr &&
+            !D3D11Identity::createShader(m_Device.Get(), (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0, &m_IdentityPixelShader)) return false;
 
     // We use a common index buffer for all geometry
     {
@@ -1336,53 +1333,48 @@ bool D3D11VARenderer::setupRenderingResources()
         }
     }
 
-    // Create our fixed vertex buffer for video rendering
-    {
-        // Scale video to the window size while preserving aspect ratio
-        SDL_Rect src, dst;
-        src.x = src.y = 0;
-        src.w = m_DecoderParams.width;
-        src.h = m_DecoderParams.height;
-        dst.x = dst.y = 0;
-        dst.w = m_DisplayWidth;
-        dst.h = m_DisplayHeight;
-        StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
-
-        // Convert screen space to normalized device coordinates
-        SDL_FRect renderRect;
-        StreamUtils::screenSpaceToNormalizedDeviceCoords(&dst, &renderRect, m_DisplayWidth, m_DisplayHeight);
-
-        // If we're binding the decoder output textures directly, don't sample from the alignment padding area
-        SDL_assert(m_TextureAlignment != 0);
-        float uMax = m_BindDecoderOutputTextures ? ((float)m_DecoderParams.width / FFALIGN(m_DecoderParams.width, m_TextureAlignment)) : 1.0f;
-        float vMax = m_BindDecoderOutputTextures ? ((float)m_DecoderParams.height / FFALIGN(m_DecoderParams.height, m_TextureAlignment)) : 1.0f;
-
-        VERTEX verts[] =
-        {
-            {renderRect.x, renderRect.y, 0, vMax},
-            {renderRect.x, renderRect.y+renderRect.h, 0, 0},
-            {renderRect.x+renderRect.w, renderRect.y, uMax, vMax},
-            {renderRect.x+renderRect.w, renderRect.y+renderRect.h, uMax, 0},
-        };
-
-        D3D11_BUFFER_DESC vbDesc = {};
-        vbDesc.ByteWidth = sizeof(verts);
-        vbDesc.Usage = D3D11_USAGE_IMMUTABLE;
-        vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        vbDesc.CPUAccessFlags = 0;
-        vbDesc.MiscFlags = 0;
-        vbDesc.StructureByteStride = sizeof(VERTEX);
-
-        D3D11_SUBRESOURCE_DATA vbData = {};
-        vbData.pSysMem = verts;
-
-        hr = m_Device->CreateBuffer(&vbDesc, &vbData, &m_VideoVertexBuffer);
-        if (FAILED(hr)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "ID3D11Device::CreateBuffer() failed: %x",
-                         hr);
-            return false;
+    // Share one decoded frame; crop using the same source geometry as input.
+    for (auto& target : m_Targets) {
+        const QSize stream(m_DecoderParams.width, m_DecoderParams.height);
+        const QSize drawable(target.width, target.height);
+        PlankPresentationSlice slice;
+        if (target.sourceRect.isValid()) {
+            slice = PlankPresentation::sliceForSource(stream, target.sourceRect, drawable);
+        } else if (m_Targets.size() > 1) {
+            slice = PlankPresentation::sliceForOutput(stream, m_PresentationCanvasSize, target.canvasRect);
+            if (slice.visible) {
+                const auto rect = slice.destinationRect;
+                const double sx = double(target.width) / target.canvasRect.width();
+                const double sy = double(target.height) / target.canvasRect.height();
+                slice.destinationRect = QRect(qRound(rect.x()*sx), qRound(rect.y()*sy),
+                                               qRound(rect.width()*sx), qRound(rect.height()*sy));
+            }
+        } else {
+            slice.sourceRect = QRectF(QPointF(), QSizeF(stream));
+            slice.destinationRect = PlankPresentation::aspectFitRect(stream, QRect(QPoint(), drawable));
+            slice.visible = true;
         }
+        if (!slice.visible) continue;
+        const auto destination = slice.destinationRect;
+        SDL_Rect rect{destination.x(), destination.y(), destination.width(), destination.height()};
+        SDL_FRect normalized{};
+        StreamUtils::screenSpaceToNormalizedDeviceCoords(&rect, &normalized, target.width, target.height);
+        const float tw = m_BindDecoderOutputTextures ? float(FFALIGN(stream.width(), m_TextureAlignment)) : float(stream.width());
+        const float th = m_BindDecoderOutputTextures ? float(FFALIGN(stream.height(), m_TextureAlignment)) : float(stream.height());
+        const auto source = slice.sourceRect;
+        const float u0 = float(source.left())/tw, u1 = float(source.right())/tw;
+        const float v0 = float(source.top())/th, v1 = float(source.bottom())/th;
+        VERTEX vertices[] = {
+            {normalized.x, normalized.y, u0, v1},
+            {normalized.x, normalized.y+normalized.h, u0, v0},
+            {normalized.x+normalized.w, normalized.y, u1, v1},
+            {normalized.x+normalized.w, normalized.y+normalized.h, u1, v0}
+        };
+        D3D11_BUFFER_DESC desc{};
+        desc.ByteWidth = sizeof(vertices); desc.Usage = D3D11_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA data{}; data.pSysMem = vertices;
+        if (FAILED(m_Device->CreateBuffer(&desc, &data, &target.vertexBuffer))) return false;
     }
 
     // Create our fixed constant buffer to limit chroma texcoords and avoid sampling from alignment texels.

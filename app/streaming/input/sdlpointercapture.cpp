@@ -166,6 +166,11 @@ void SdlInputHandler::handlePointerCapture(const unsigned char* data, unsigned l
 
 void SdlInputHandler::pollImmersiveMouse()
 {
+#ifdef Q_OS_WIN
+    refreshNormalizedPen();
+    pollWindowsPen();
+    updateTabletCursorVisibility();
+#endif
     if (!m_ImmersiveMouse) return;
     if (m_PointerBridge->tabletRequested.exchange(false)) {
         cancelImmersiveMouse();

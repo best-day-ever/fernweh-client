@@ -16,6 +16,8 @@
 #endif
 #ifdef Q_OS_WIN
 #include "streaming/input/windowsrawwacom.h"
+#include "streaming/input/windowspen.h"
+#include "streaming/plankwin32cursor.h"
 #endif
 
 #ifdef HAVE_MAC_RAW_WACOM
@@ -178,6 +180,8 @@ SdlInputHandler::~SdlInputHandler()
     m_LinuxRawWacomInput.reset();
 #endif
 #ifdef Q_OS_WIN
+    m_WindowsCursor.reset();
+    m_WindowsPenInput.reset();
     m_WindowsRawWacomInput.reset();
 #endif
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
@@ -337,6 +341,27 @@ void SdlInputHandler::setWindow(SDL_Window *window)
         }
     }
 #endif
+#ifdef Q_OS_WIN
+    if (m_SdlPenInput) {
+        m_WindowsPenInput = std::make_unique<WindowsPenInput>(
+            [this] { return windowsPenAllowed(); },
+            [this](const WindowsPenInput::Sample& sample) {
+                if (!m_SdlPenInput) return;
+                if (sample.cancel) { m_SdlPenInput->setActive(false); refreshNormalizedPen(); return; }
+                if (sample.leave) { m_SdlPenInput->handleProximityOut(sample.pen); return; }
+                if (!windowsPenAllowed()) return;
+                float x = 0, y = 0;
+                if (!mapWindowPointToNormalizedStream(sample.window, sample.x, sample.y, x, y)) {
+                    m_SdlPenInput->handleProximityOut(sample.pen); return;
+                }
+                m_SdlPenInput->handleAxis(sample.pen, PlankMacPenAxis::XTilt, sample.tiltX);
+                m_SdlPenInput->handleAxis(sample.pen, PlankMacPenAxis::YTilt, sample.tiltY);
+                m_SdlPenInput->handleSample(sample.pen, x, y, sample.pressure, sample.contact, sample.flags);
+            });
+        pollWindowsPen();
+    }
+#endif
+
 }
 
 void SdlInputHandler::setPresentationLayout(
@@ -537,7 +562,7 @@ void SdlInputHandler::applyPendingRemoteCursorPosition()
     m_AppliedRemoteCursorPosition = position;
     m_AppliedRemoteCursorPositionValid = true;
     m_AppliedRemoteCursorPositionSequence = position.sequence;
-    updateSharedPointer();
+    updateTabletCursorVisibility();
     SDL_Window* targetWindow = nullptr;
     int x = 0;
     int y = 0;
@@ -638,6 +663,10 @@ void SdlInputHandler::notifyMouseLeave()
 
 void SdlInputHandler::notifyFocusLost()
 {
+#ifdef Q_OS_WIN
+    if (m_WindowsPenInput) m_WindowsPenInput->reset();
+    m_WindowsCursor.reset();
+#endif
     cancelImmersiveMouse();
     releaseMouseButtons();
     hideSharedPointer();
@@ -743,7 +772,13 @@ void SdlInputHandler::handleRawHidControl(const unsigned char* data,
 
 void SdlInputHandler::beginRawHidReconnect()
 {
+#ifdef Q_OS_WIN
+    if (m_WindowsPenInput) m_WindowsPenInput->reset();
+#endif
     cancelImmersiveMouse();
+#ifdef Q_OS_WIN
+    m_WindowsCursor.reset();
+#endif
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
     if (m_SdlPenInput) m_SdlPenInput->setActive(false);
 #endif
@@ -1170,6 +1205,9 @@ void SdlInputHandler::reconcileWaylandTabletCursorOutputs()
 void SdlInputHandler::updateTabletCursorVisibility()
 {
     updateSharedPointer();
+#ifdef Q_OS_WIN
+    updateWindowsCursor();
+#endif
     reconcileWaylandTabletCursorOutputs();
 
     SDL_Window* positionWindow = nullptr;
@@ -1259,6 +1297,10 @@ bool SdlInputHandler::mapWindowPointToNormalizedStream(
 void SdlInputHandler::handlePenProximityEvent(SDL_PenProximityEvent* event)
 {
     refreshNormalizedPen();
+#ifdef Q_OS_WIN
+    pollWindowsPen();
+    if (m_WindowsPenInput && m_WindowsPenInput->handlesPenEvents()) return;
+#endif
     if (!m_SdlPenInput) {
         return;
     }
@@ -1273,6 +1315,10 @@ void SdlInputHandler::handlePenProximityEvent(SDL_PenProximityEvent* event)
 void SdlInputHandler::handlePenTouchEvent(SDL_PenTouchEvent* event)
 {
     refreshNormalizedPen();
+#ifdef Q_OS_WIN
+    pollWindowsPen();
+    if (m_WindowsPenInput && m_WindowsPenInput->handlesPenEvents()) return;
+#endif
     if (!m_SdlPenInput) {
         return;
     }
@@ -1293,6 +1339,10 @@ void SdlInputHandler::handlePenTouchEvent(SDL_PenTouchEvent* event)
 void SdlInputHandler::handlePenMotionEvent(SDL_PenMotionEvent* event)
 {
     refreshNormalizedPen();
+#ifdef Q_OS_WIN
+    pollWindowsPen();
+    if (m_WindowsPenInput && m_WindowsPenInput->handlesPenEvents()) return;
+#endif
     if (!m_SdlPenInput) {
         return;
     }
@@ -1313,6 +1363,10 @@ void SdlInputHandler::handlePenMotionEvent(SDL_PenMotionEvent* event)
 void SdlInputHandler::handlePenButtonEvent(SDL_PenButtonEvent* event)
 {
     refreshNormalizedPen();
+#ifdef Q_OS_WIN
+    pollWindowsPen();
+    if (m_WindowsPenInput && m_WindowsPenInput->handlesPenEvents()) return;
+#endif
     if (!m_SdlPenInput) {
         return;
     }
@@ -1325,6 +1379,10 @@ void SdlInputHandler::handlePenButtonEvent(SDL_PenButtonEvent* event)
 void SdlInputHandler::handlePenAxisEvent(SDL_PenAxisEvent* event)
 {
     refreshNormalizedPen();
+#ifdef Q_OS_WIN
+    pollWindowsPen();
+    if (m_WindowsPenInput && m_WindowsPenInput->handlesPenEvents()) return;
+#endif
     if (!m_SdlPenInput) {
         return;
     }
@@ -1381,6 +1439,8 @@ void SdlInputHandler::updateSharedPointer()
 #ifdef Q_OS_MACOS
     MacWindow::tabletCursor(window, image.constBits(), image.width(), image.height(),
                            1, 1, UINT64_MAX, x, y, true);
+#elif defined(Q_OS_WIN)
+    // Draw through the owned Win32 host-cursor surface below.
 #else
     if (qstrcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0) {
         if (!m_SharedWaylandPointer || !m_SharedWaylandPointer->isAttachedTo(window)) {
@@ -1401,3 +1461,55 @@ void SdlInputHandler::updateSharedPointer()
     m_SharedPointerTarget = window;
     m_SharedPointerTargetId = SDL_GetWindowID(window);
 }
+
+#ifdef Q_OS_WIN
+void SdlInputHandler::updateWindowsCursor()
+{
+    if (!m_LocalCursorSupported) { m_WindowsCursor.reset(); return; }
+    if (!m_WindowsCursor) {
+        m_WindowsCursorGeneration = UINT64_MAX;
+        m_WindowsCursor = PlankWin32Cursor::create([this](SDL_Window*& window, int& x, int& y) {
+            if (!m_AppliedRemoteCursorPositionValid || !m_RemoteCursorVisible ||
+                    immersiveMouseOwnsPointer() ||
+                    !mapRemoteCursorPositionToWindow(m_AppliedRemoteCursorPosition, window, x, y)) return false;
+            bool focused = m_Window && (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_INPUT_FOCUS);
+            for (const auto& output : m_PresentationLayout.outputs)
+                focused |= output.window && (SDL_GetWindowFlags(output.window) & SDL_WINDOW_INPUT_FOCUS);
+            if (!focused || !window || (SDL_GetWindowFlags(window) & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED))) return false;
+            if (m_ViewOnly) return true;
+            if (m_TabletCursorActive) return isCaptureActive() &&
+                    m_AppliedRemoteCursorPositionSequence > m_TabletCursorActivationSequence;
+            return m_SharedPointerTarget == window;
+        });
+    }
+    if (m_AppliedRemoteCursorValid && m_WindowsCursorGeneration != m_AppliedRemoteCursor.generation) {
+        const auto& image = m_AppliedRemoteCursor;
+        m_WindowsCursorGeneration = image.generation;
+        m_WindowsCursor->setImage(image.pixels.data(), image.width, image.height,
+                                 image.hotspotX, image.hotspotY);
+    }
+    m_WindowsCursor->update();
+}
+#endif
+
+#ifdef Q_OS_WIN
+bool SdlInputHandler::windowsPenAllowed()
+{
+    if (!m_SdlPenInput || m_ViewOnly || !isCaptureActive() ||
+            (m_WindowsRawWacomInput && m_WindowsRawWacomInput->attached())) return false;
+    if (m_Window && (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_INPUT_FOCUS)) return true;
+    for (const auto& output : m_PresentationLayout.outputs)
+        if (output.window && (SDL_GetWindowFlags(output.window) & SDL_WINDOW_INPUT_FOCUS)) return true;
+    return false;
+}
+void SdlInputHandler::pollWindowsPen()
+{
+    if (!m_WindowsPenInput) return;
+    std::vector<SDL_Window*> windows;
+    if (m_Window) windows.push_back(m_Window);
+    for (const auto& output : m_PresentationLayout.outputs)
+        if (output.window && output.window != m_Window) windows.push_back(output.window);
+    m_WindowsPenInput->setWindows(std::move(windows));
+    m_WindowsPenInput->poll();
+}
+#endif

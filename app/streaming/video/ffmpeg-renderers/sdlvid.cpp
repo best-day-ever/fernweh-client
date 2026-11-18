@@ -131,6 +131,12 @@ bool SdlRenderer::isPixelFormatSupported(int videoFormat, AVPixelFormat pixelFor
 
 bool SdlRenderer::initialize(PDECODER_PARAMETERS params)
 {
+#ifdef Q_OS_WIN32
+    // SDL's fallback output is eight-bit and only draws one window.
+    if ((params->videoFormat & VIDEO_FORMAT_MASK_10BIT) ||
+            (params->presentationLayout && params->presentationLayout->isMultiOutput())) return false;
+#endif
+
     bool enableVsync = false;
 
     m_VideoFormat = params->videoFormat;

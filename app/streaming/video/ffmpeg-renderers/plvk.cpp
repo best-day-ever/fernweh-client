@@ -389,6 +389,10 @@ bool PlVkRenderer::isExtensionSupportedByPhysicalDevice(VkPhysicalDevice device,
 bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
 {
     m_Window = params->window;
+#ifdef Q_OS_WIN32
+    m_RequireTenBit = (params->videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0;
+    m_IdentityGbr = params->enableIdentityGbr;
+#endif
     if (params->presentationLayout != nullptr &&
             params->presentationLayout->canvasSize.isValid() &&
             !params->presentationLayout->outputs.isEmpty()) {
@@ -503,7 +507,7 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
         vkSwapchainParams.present_mode = presentMode;
         vkSwapchainParams.swapchain_depth = 1; // No queued frames
 #if PL_API_VER >= 338
-        vkSwapchainParams.disable_10bit_sdr = true;
+        vkSwapchainParams.disable_10bit_sdr = !m_RequireTenBit;
 #endif
         target.swapchain = pl_vulkan_create_swapchain(
                     m_Vulkan, &vkSwapchainParams);
@@ -745,6 +749,27 @@ bool PlVkRenderer::mapAvFrameToPlacebo(const AVFrame *frame, pl_frame* mappedFra
         }
     }
 
+#ifdef Q_OS_WIN32
+    if (m_IdentityGbr) {
+        auto format = static_cast<AVPixelFormat>(frame->format);
+        if (frame->hw_frames_ctx) format = reinterpret_cast<AVHWFramesContext*>(frame->hw_frames_ctx->data)->sw_format;
+        const auto* descriptor = av_pix_fmt_desc_get(format);
+        if (!descriptor) return false;
+        if (!(descriptor->flags & AV_PIX_FMT_FLAG_RGB)) {
+            // For identity transport, Y/U/V are G/B/R. RGB pixel formats
+            // already have their component mapping assigned by libplacebo.
+            for (int p = 0; p < mappedFrame->num_planes; ++p)
+                for (int c = 0; c < mappedFrame->planes[p].components; ++c) {
+                    auto& component = mappedFrame->planes[p].component_mapping[c];
+                    if (component >= 0 && component < 3) component = (component + 1) % 3;
+                }
+        }
+        mappedFrame->repr.sys = PL_COLOR_SYSTEM_RGB;
+        mappedFrame->repr.levels = PL_COLOR_LEVELS_FULL;
+        mappedFrame->color = pl_color_space_srgb;
+    }
+#endif
+
     // libplacebo assumes a minimum luminance value of 0 means the actual value was unknown.
     // Since we assume the host values are correct, we use the PL_COLOR_HDR_BLACK constant to
     // indicate infinite contrast.
@@ -885,6 +910,14 @@ void PlVkRenderer::waitToRender()
         }
         if (pl_swapchain_start_frame(target.swapchain,
                                      &target.swapchainFrame)) {
+            if (!preservesTargetPrecision(target.swapchainFrame)) {
+                pl_swapchain_submit_frame(target.swapchain);
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Selected ten-bit profile requires a ten-bit RGB output on every Windows monitor");
+                if (Session::get()) emit Session::get()->displayLaunchError(
+                    QObject::tr("The selected video profile requires a 10-bit presentation surface on every display."));
+                SDL_Event quit{}; quit.type = SDL_EVENT_QUIT; SDL_PushEvent(&quit);
+                continue;
+            }
             target.hasPendingSwapchainFrame = true;
         }
     }
@@ -1120,8 +1153,17 @@ bool PlVkRenderer::testRenderFrame(AVFrame *frame)
         return false;
     }
 
+    bool precision = true;
+    if (m_RequireTenBit) for (auto& target : m_PresentationTargets) {
+        pl_swapchain_frame output{};
+        if (!pl_swapchain_start_frame(target.swapchain, &output)) { precision = false; continue; }
+        precision &= preservesTargetPrecision(output);
+        const float clear[4] = {}; pl_tex_clear(m_Vulkan->gpu, output.fbo, clear);
+        pl_swapchain_submit_frame(target.swapchain);
+    }
     unmapAvFrameFromPlacebo(&mappedFrame, importedHostFrame);
-    return true;
+    if (!precision) SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Windows Vulkan output failed the exact ten-bit surface gate");
+    return precision;
 }
 
 void PlVkRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
@@ -1341,4 +1383,13 @@ AVPixelFormat PlVkRenderer::getPreferredPixelFormat(int videoFormat)
 IFFmpegRenderer::RendererType PlVkRenderer::getRendererType()
 {
     return IFFmpegRenderer::RendererType::Vulkan;
+}
+
+bool PlVkRenderer::preservesTargetPrecision(const pl_swapchain_frame& frame) const
+{
+    if (!m_RequireTenBit) return true;
+    const auto format = frame.fbo ? frame.fbo->params.format : nullptr;
+    return format && format->num_components >= 3 &&
+        PlankPresentation::preservesPrecision(10, format->component_depth[0],
+                                                format->component_depth[1], format->component_depth[2]);
 }

@@ -2403,7 +2403,8 @@ bool Session::snapshotClientDisplays()
     // presentation layout, not display discovery, depends on that state.
     m_MultiDisplayPresentationAvailable =
             (strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0 ||
-             strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0) &&
+             strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0 ||
+             strcmp(SDL_GetCurrentVideoDriver(), "windows") == 0) &&
             m_ClientDisplays.size() == 2;
     if (m_MultiDisplayPresentationAvailable) {
         const auto& left = m_ClientDisplays.at(0).logicalBounds;
@@ -3387,7 +3388,8 @@ bool Session::planDisplayArrangement(const QVector<NvClientDisplay>& displays, i
     const char* driver = SDL_GetCurrentVideoDriver();
     // Cocoa can prepare hidden per-display windows even when starting windowed.
     limits.separateWindows = driver != nullptr &&
-            (strcmp(driver, "cocoa") == 0 || (m_IsFullScreen && strcmp(driver, "wayland") == 0));
+            (strcmp(driver, "cocoa") == 0 ||
+             (m_IsFullScreen && (strcmp(driver, "wayland") == 0 || strcmp(driver, "windows") == 0)));
 #endif
     DisplayProfile::Resolved resolved = displayProfileFor(displays);
     if (resolved.source == DisplayProfile::Resolved::Legacy) {

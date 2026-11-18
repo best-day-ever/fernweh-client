@@ -12,6 +12,9 @@ extern "C" {
 
 #include <wrl/client.h>
 #include <array>
+#include <vector>
+#include <QRectF>
+#include "streaming/plankpresentation.h"
 
 class D3D11VARenderer : public IFFmpegRenderer
 {
@@ -48,7 +51,7 @@ private:
     bool setupTexturePoolViews(AVD3D11VAFramesContext* frameContext); // for m_BindDecoderOutputTextures
     void renderOverlay(Overlay::OverlayType type);
     void bindColorConversion(AVFrame* frame);
-    void renderVideo(AVFrame* frame);
+    void renderVideo(AVFrame* frame, ID3D11Buffer* vertices);
     bool checkDecoderSupport(IDXGIAdapter* adapter);
     bool createDeviceByAdapterIndex(int adapterIndex, bool* adapterNotFound = nullptr);
 
@@ -86,7 +89,22 @@ private:
     bool m_LastPresentationAccepted = false;
 
     std::array<Microsoft::WRL::ComPtr<ID3D11PixelShader>, PixelShaders::_COUNT> m_VideoPixelShaders;
-    Microsoft::WRL::ComPtr<ID3D11Buffer> m_VideoVertexBuffer;
+    // Per-output target management adapted from SkulleyFX 8280fc48.
+    struct PresentationTarget {
+        SDL_Window* window = nullptr;
+        HWND hwnd = nullptr;
+        Microsoft::WRL::ComPtr<IDXGISwapChain4> swapChain;
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> renderTargetView;
+        Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer;
+        QRect canvasRect;
+        QRectF sourceRect;
+        int width = 0, height = 0;
+        bool primary = true;
+        DxgiPresentation presentation;
+    };
+    std::vector<PresentationTarget> m_Targets;
+    QSize m_PresentationCanvasSize;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_IdentityPixelShader;
 
     // Only valid if !m_BindDecoderOutputTextures
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_VideoTexture;
