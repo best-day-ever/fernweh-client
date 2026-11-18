@@ -386,6 +386,9 @@ void SdlInputHandler::setPresentationLayout(
     updateTabletCursorVisibility();
     updatePointerRegionLock();
 #ifdef Q_OS_WIN
+    // The previous secondary windows may already be gone. Rebind the native
+    // message hook before permitting it to inspect any SDL window again.
+    pollWindowsPen();
     m_WindowsPresentationChanging = false;
     refreshNormalizedPen();
 #endif
