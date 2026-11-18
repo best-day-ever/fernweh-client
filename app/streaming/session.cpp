@@ -2476,8 +2476,7 @@ void Session::rebuildPresentationLayout()
     }
 
     const bool multiOutputActive = m_UseMultiDisplayPresentation &&
-            (m_PresentationFullscreen || strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0 ||
-             strcmp(SDL_GetCurrentVideoDriver(), "windows") == 0) &&
+            PlankPresentation::supportsSeparateWindows(SDL_GetCurrentVideoDriver(), m_PresentationFullscreen) &&
             !m_SecondaryWindows.isEmpty();
     if (multiOutputActive) {
         int canvasWidth = 0;
@@ -2822,7 +2821,7 @@ bool Session::createSecondaryWindows(Uint32 defaultWindowFlags, const std::strin
         m_SecondaryWindows.append(secondary);
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Created PLANK %s surface for output %u",
-                    cocoa ? "macOS" : "Wayland fullscreen", display.displayId);
+                    cocoa ? "macOS" : windows ? "Windows" : "Wayland fullscreen", display.displayId);
     }
     return true;
 }
@@ -3112,8 +3111,7 @@ void Session::setPresentationWindowsFullscreen(bool fullscreen)
                     "Failed to set presentation fullscreen state: %s",
                     SDL_GetError());
     }
-    if ((strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0 ||
-         strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0) &&
+    if (PlankPresentation::supportsSeparateWindows(SDL_GetCurrentVideoDriver(), true) &&
             !SDL_SyncWindow(m_Window)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "Timed out synchronizing presentation fullscreen state: %s",
@@ -3418,7 +3416,7 @@ bool Session::planDisplayArrangement(const QVector<NvClientDisplay>& displays, i
     limits.separateWindows = true;
 #else
     const char* driver = SDL_GetCurrentVideoDriver();
-    // Cocoa can prepare hidden per-display windows even when starting windowed.
+    // Cocoa and Windows can prepare per-display windows when starting windowed.
     limits.separateWindows = PlankPresentation::supportsSeparateWindows(driver, m_IsFullScreen);
 #endif
     DisplayProfile::Resolved resolved = displayProfileFor(displays);
@@ -3492,8 +3490,7 @@ void Session::applyArrangementPresentation()
     const bool separateWindows = true;
 #else
     const char* driver = SDL_GetCurrentVideoDriver();
-    const bool separateWindows = driver != nullptr &&
-            (strcmp(driver, "cocoa") == 0 || (m_IsFullScreen && strcmp(driver, "wayland") == 0));
+    const bool separateWindows = PlankPresentation::supportsSeparateWindows(driver, m_IsFullScreen);
 #endif
     QVector<NvClientDisplay> displays;
     for (const auto& display : std::as_const(m_ClientDisplays)) displays.append(display.probeView);
@@ -5815,7 +5812,8 @@ void Session::execInternal()
         } else {
             setPresentationWindowsFullscreen(true);
         }
-    } else if (m_UseMultiDisplayPresentation && strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0) {
+    } else if (m_UseMultiDisplayPresentation &&
+               PlankPresentation::supportsSeparateWindows(SDL_GetCurrentVideoDriver(), false)) {
         setPresentationWindowsFullscreen(false);
     }
 

@@ -440,7 +440,7 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
     // Build the list of windows to present into. A two-screen session has one
     // per monitor; everything else has a single window.
     m_Targets.clear();
-    if (params->presentationLayout != nullptr && params->presentationLayout->isMultiOutput()) {
+    if (params->presentationLayout != nullptr && !params->presentationLayout->outputs.isEmpty()) {
         m_PresentationCanvasSize = params->presentationLayout->canvasSize;
         for (const auto& output : params->presentationLayout->outputs) {
             PresentationTarget target;
@@ -647,14 +647,14 @@ void D3D11VARenderer::renderFrame(AVFrame* frame)
     const auto color = frame->color_trc == AVCOL_TRC_SMPTE2084 ?
             DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     for (auto& target : m_Targets) {
-        if (!target.renderTargetView || !target.vertexBuffer) continue;
+        if (!target.renderTargetView) continue;
         const float clear[4] = {};
         m_DeviceContext->ClearRenderTargetView(target.renderTargetView.Get(), clear);
         m_DeviceContext->OMSetRenderTargets(1, target.renderTargetView.GetAddressOf(), nullptr);
         D3D11_VIEWPORT viewport{};
         viewport.Width = float(target.width); viewport.Height = float(target.height); viewport.MaxDepth = 1;
         m_DeviceContext->RSSetViewports(1, &viewport);
-        renderVideo(frame, target.vertexBuffer.Get());
+        if (target.vertexBuffer) renderVideo(frame, target.vertexBuffer.Get());
         if (target.primary) for (int i = 0; i < Overlay::OverlayMax; ++i) renderOverlay(Overlay::OverlayType(i));
         if (frame->color_trc != m_LastColorTrc && FAILED(target.swapChain->SetColorSpace1(color))) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not set color space on a Windows presentation output");

@@ -912,6 +912,9 @@ void PlVkRenderer::waitToRender()
                                      &target.swapchainFrame)) {
             if (!preservesTargetPrecision(target.swapchainFrame)) {
                 pl_swapchain_submit_frame(target.swapchain);
+#ifdef Q_OS_WIN32
+                pl_swapchain_swap_buffers(target.swapchain);
+#endif
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Selected ten-bit profile requires a ten-bit RGB output on every Windows monitor");
                 if (Session::get()) emit Session::get()->displayLaunchError(
                     QObject::tr("The selected video profile requires a 10-bit presentation surface on every display."));
@@ -1159,7 +1162,10 @@ bool PlVkRenderer::testRenderFrame(AVFrame *frame)
         if (!pl_swapchain_start_frame(target.swapchain, &output)) { precision = false; continue; }
         precision &= preservesTargetPrecision(output);
         const float clear[4] = {}; pl_tex_clear(m_Vulkan->gpu, output.fbo, clear);
-        pl_swapchain_submit_frame(target.swapchain);
+        precision &= pl_swapchain_submit_frame(target.swapchain);
+#ifdef Q_OS_WIN32
+        pl_swapchain_swap_buffers(target.swapchain);
+#endif
     }
     unmapAvFrameFromPlacebo(&mappedFrame, importedHostFrame);
     if (!precision) SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Windows Vulkan output failed the exact ten-bit surface gate");
