@@ -297,6 +297,7 @@ SOURCES += \
     backend/plankbrokerclient.cpp \
     backend/fernwehupdater.cpp \
     backend/betadiagnostics.cpp \
+    backend/diagnosticnetworkprobe.cpp \
     backend/plankenrollment.cpp \
     backend/plankpasskey.cpp \
     backend/qrencoder.cpp \
@@ -370,6 +371,7 @@ HEADERS += \
     backend/fernwehupdater.h \
     backend/betadiagnostics.h \
     backend/diagnosticlog.h \
+    backend/diagnosticnetworkprobe.h \
     backend/fernwehupdatepolicy.h \
     backend/plankenrollment.h \
     backend/plankpasskey.h \
@@ -891,15 +893,17 @@ win32 {
     }
 }
 
+win32:equals(FERNWEH_BROKER_ENABLED, 1): LIBS += -liphlpapi
+
 # A direct-only product has no broker API, session store, device keys, remote
 # account UI, enrollment, diagnostics uploader or broker-based updater objects.
 !equals(FERNWEH_BROKER_ENABLED, 1) {
     SOURCES -= backend/brokersessionstore.cpp backend/brokerdevicekey.cpp \
-        backend/plankbrokerclient.cpp backend/fernwehupdater.cpp backend/betadiagnostics.cpp \
+        backend/plankbrokerclient.cpp backend/fernwehupdater.cpp backend/betadiagnostics.cpp backend/diagnosticnetworkprobe.cpp \
         backend/plankenrollment.cpp backend/plankpasskey.cpp backend/qrencoder.cpp \
         gui/remotebroker.cpp gui/onboardingcontroller.cpp
     HEADERS -= backend/brokersessionstore.h backend/brokerdevicekey.h \
-        backend/plankbrokerclient.h backend/fernwehupdater.h backend/betadiagnostics.h backend/diagnosticlog.h \
+        backend/plankbrokerclient.h backend/fernwehupdater.h backend/betadiagnostics.h backend/diagnosticlog.h backend/diagnosticnetworkprobe.h \
         backend/plankenrollment.h backend/plankpasskey.h backend/qrencoder.h \
         gui/remotebroker.h gui/onboardingcontroller.h
 }

@@ -1438,14 +1438,14 @@ void RemoteBroker::sendKeepalive()
 QObject* RemoteBroker::betaDiagnostics() const { return m_Diagnostics; }
 void RemoteBroker::configureDiagnostics()
 {
-    if (!configured() || !signedIn()) { m_Diagnostics->setAccount(QString(),{}); m_Diagnostics->setSupportTransport({},{}); return; }
+    if (!configured() || !signedIn()) { m_Diagnostics->setAccount(QString(),{}); m_Diagnostics->setSupportTransport({},{}); m_Diagnostics->setNetworkTransport({}, {}, {}, {}); return; }
     auto pins = PlankBroker::normalizePins(m_Preferences->brokerPins); pins.sort();
     const QString identity = brokerAddress().toLower()+"\n"+pins.join(",")+"\n"+m_Username;
     QSettings settings;
-    if (m_Diagnostics->enabled() && !settings.value("diagnosticSupportNoticeShown",false).toBool()) {
-        const QString notice = tr("Diagnostics are enabled: session summaries are sent after disconnecting. Your remote access administrator can also request a recent redacted Fernweh log while the app is open. You can turn both off in Settings.");
+    if (m_Diagnostics->enabled() && !settings.value("diagnosticNetworkNoticeShown",false).toBool()) {
+        const QString notice = tr("Diagnostics are enabled: your administrator can collect recent redacted Fernweh logs and run a bounded connection test while the app is open. A connection test takes about two minutes and measures network quality and bandwidth. You can turn diagnostics off in Settings.");
         reportSessionNotice(m_SessionNotice.isEmpty() ? notice : m_SessionNotice+"\n"+notice);
-        settings.setValue("diagnosticSupportNoticeShown",true);
+        settings.setValue("diagnosticNetworkNoticeShown",true);
     }
     const auto token = m_Token;
     const auto revision = token->revision();
@@ -1473,4 +1473,21 @@ void RemoteBroker::configureDiagnostics()
         if (current.isEmpty() || cancelled->load()) return 0;
         return PlankBrokerClient(lowPriority).submitDiagnosticSupport(current,bundle);
     });
+    m_Diagnostics->setNetworkTransport({config.host,config.port,config.pins},
+        [token,revision,config](const std::shared_ptr<std::atomic_bool>& cancelled) {
+            auto low=config; low.cancelled=[cancelled] { return cancelled->load(); }; low.requestTimeoutMs=3000;
+            const auto current=token->getForRevision(revision);
+            if (current.isEmpty()||cancelled->load()) return QJsonObject();
+            return PlankBrokerClient(low).diagnosticNetworkRequest(current);
+        },[token,revision,config](const QJsonObject& body,const std::shared_ptr<std::atomic_bool>& cancelled) {
+            auto low=config; low.cancelled=[cancelled] { return cancelled->load(); }; low.requestTimeoutMs=3000;
+            const auto current=token->getForRevision(revision);
+            if (current.isEmpty()||cancelled->load()) return QJsonObject();
+            return PlankBrokerClient(low).startDiagnosticNetwork(current,body);
+        },[token,revision,config](const QJsonObject& bundle,const std::shared_ptr<std::atomic_bool>& cancelled) {
+            auto low=config; low.cancelled=[cancelled] { return cancelled->load(); }; low.requestTimeoutMs=3000;
+            const auto current=token->getForRevision(revision);
+            if (current.isEmpty()||cancelled->load()) return 0;
+            return PlankBrokerClient(low).submitDiagnosticNetwork(current,bundle);
+        });
 }

@@ -31,6 +31,8 @@
 #include "onboardingstate.h"
 #include "qrencoder.h"
 
+#include "tlsfixtures.h"
+
 // Remote (broker) mode: bde-linux docs/plank-broker.md sections 10.1 / 10.2.
 // Certificate fixtures were generated with OpenSSL; their expected pins were
 // computed independently with
@@ -38,17 +40,8 @@
 // (SPKI) and `openssl dgst -sha256` over the DER (leaf).
 
 namespace {
+using namespace PlankTlsFixture;
 
-const char EcCertificateBase64[] =
-    "MIIBtDCCAVmgAwIBAgIUCRdNSSSN3QeyedMR/2NNJjI1CRowCgYIKoZIzj0EAwIwHjEcMBoGA1UE"
-    "AwwTYnJva2VyLmV4YW1wbGUudGVzdDAgFw0yNjA5MjExNDA5NTRaGA8yMTI2MDgyODE0MDk1NFow"
-    "HjEcMBoGA1UEAwwTYnJva2VyLmV4YW1wbGUudGVzdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IA"
-    "BILYjWo0puuGeIwCH04JTdCwlrSOeTNC3g5S7fRp9AEGiT1gtZ8dGcrGOifhmaMrgnQA8NBiABzr"
-    "8VlkuGwcOrajczBxMB0GA1UdDgQWBBTOHP6zpycxw0Iuu9Qb8VWEN3lVjzAfBgNVHSMEGDAWgBTO"
-    "HP6zpycxw0Iuu9Qb8VWEN3lVjzAPBgNVHRMBAf8EBTADAQH/MB4GA1UdEQQXMBWCE2Jyb2tlci5l"
-    "eGFtcGxlLnRlc3QwCgYIKoZIzj0EAwIDSQAwRgIhAKJtlaaULDAPMm3HniayaWPdtlOPUXKwWvAU"
-    "US8KGpB6AiEAnekyGhNtj05Lfadv9uVX8C8UOhoH5H/ztN2hNc+ui0g=";
-const char EcSpkiSha256[] = "91bb7956f2378b1ed82e7f52b18d5ce8ca2a4f6d835919872083498f517b09c8";
 
 const char RsaCertificateBase64[] =
     "MIIEOTCCAqGgAwIBAgIUUkxOM3CFJXvrZWgwWytYsPpi4XQwDQYJKoZIhvcNAQELBQAwHDEaMBgG"
@@ -76,12 +69,6 @@ const char RsaLeafSha256[] = "11ac435667fdae3f2abbec034497f69b8e54c894a3336975ba
 
 // Throwaway key for the in-process TLS tests below only; it matches the
 // EC certificate above and protects nothing.
-const char EcTestOnlyPrivateKeyPem[] =
-    "-----BEGIN PRIVATE KEY-----\n"
-    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgczd2sUy0hEU5M5o/\n"
-    "XskQT9pkYDROwzubJkO4EjHBmE+hRANCAASC2I1qNKbrhniMAh9OCU3QsJa0jnkz\n"
-    "Qt4OUu30afQBBok9YLWfHRnKxjon4ZmjK4J0APDQYgAc6/FZZLhsHDq2\n"
-    "-----END PRIVATE KEY-----\n";
 
 QByteArray ecCertificate() { return QByteArray::fromBase64(EcCertificateBase64); }
 QByteArray rsaCertificate() { return QByteArray::fromBase64(RsaCertificateBase64); }

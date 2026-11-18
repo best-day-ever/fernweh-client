@@ -83,11 +83,20 @@ BetaDiagnostics::BetaDiagnostics(QString directory, QObject* parent) : QObject(p
     m_SupportPoll.setInterval(30000);
     connect(&m_SupportPoll, &QTimer::timeout, this, &BetaDiagnostics::pollSupport);
     m_SupportPoll.start();
+    m_NetworkWorker.setMaxThreadCount(1);
+    m_NetworkInstance=QUuid::createUuid().toString(QUuid::Id128);
+    m_NetworkWorker.setThreadPriority(QThread::LowPriority);
+    m_NetworkWorker.setExpiryTimeout(1000);
+    m_NetworkPoll.setInterval(30000);
+    connect(&m_NetworkPoll,&QTimer::timeout,this,&BetaDiagnostics::pollNetwork);
+    m_NetworkPoll.start();
 }
 BetaDiagnostics::~BetaDiagnostics() {
     m_Cancel->store(true);
     m_SupportCancel->store(true);
+    m_NetworkCancel->store(true);
     m_Worker.waitForDone(); // Network deadline is 3 seconds; no detached owner.
+    m_NetworkWorker.waitForDone(); // Probe checks cancellation; HTTPS has bounded aborts.
 }
 void BetaDiagnostics::setEnabled(bool enabled) {
     if (m_Enabled == enabled) return;
@@ -96,6 +105,9 @@ void BetaDiagnostics::setEnabled(bool enabled) {
     m_Cancel->store(true);
     m_SupportCancel->store(true);
     m_SupportCancel = std::make_shared<std::atomic_bool>(!enabled || m_Identity.isEmpty());
+    m_NetworkCancel->store(true);
+    m_NetworkCancel = std::make_shared<std::atomic_bool>(!enabled || m_Identity.isEmpty());
+    if (!enabled) m_NetworkPending = {};
     if (!enabled) m_SupportPollPending = false;
     DiagnosticLog::setContext(m_Identity, enabled);
     if (!enabled) m_LastReport = {};
@@ -115,8 +127,12 @@ void BetaDiagnostics::setAccount(const QString& identity, Sender sender) {
     m_Cancel->store(true);
     if (m_Active) { checkpoint(); m_Report = {}; m_Checkpoint.stop(); }
     const QString nextIdentity = identity.isEmpty() ? QString() : QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256).toHex());
-    if (nextIdentity != m_Identity) m_LastReport = {};
+    if (nextIdentity != m_Identity) { m_LastReport = {}; m_CompletedInstanceSupport.clear(); }
     m_Identity = nextIdentity;
+    m_NetworkCancel->store(true);
+    m_NetworkCancel = std::make_shared<std::atomic_bool>(!m_Enabled || m_Identity.isEmpty());
+    m_NetworkPending = {};
+    m_CompletedNetwork = QSettings().value("diagnosticNetworkCompleted/"+m_Identity).toStringList();
     m_SupportCancel->store(true);
     m_SupportCancel = std::make_shared<std::atomic_bool>(!m_Enabled || m_Identity.isEmpty());
     m_SupportPollPending = false;
@@ -141,12 +157,14 @@ void BetaDiagnostics::pollSupport() {
     const auto sender = m_SupportSender;
     const auto cancelled = m_SupportCancel;
     const auto completed = m_CompletedSupport;
+    const auto instanceCompleted=m_CompletedInstanceSupport;
+    const auto instance=m_NetworkInstance;
     const auto identity = m_Identity;
     QJsonObject context = !m_Report.isEmpty() ? snapshot().value("report").toObject() : m_LastReport;
     if (context.isEmpty()) context = report(QUuid::createUuid().toString(QUuid::Id128), displays());
     QPointer<BetaDiagnostics> self(this);
-    m_Worker.start([self,poller,sender,cancelled,completed,identity,context] {
-        QString delivered;
+    m_Worker.start([self,poller,sender,cancelled,completed,instanceCompleted,instance,identity,context] {
+        QString delivered; bool perInstance=false;
         try {
             QSettings preferences; preferences.sync();
             if (!cancelled->load() && preferences.value("betaDiagnosticsEnabled",true).toBool()) {
@@ -155,26 +173,95 @@ void BetaDiagnostics::pollSupport() {
                 static const QRegularExpression validId(QStringLiteral("^[0-9a-f]{32}$"));
                 const qint64 now = QDateTime::currentSecsSinceEpoch();
                 const qint64 expiry = request.value("expires_unix").toInteger();
-                if (request.value("schema").toInt() == 1 && validId.match(id).hasMatch() && !completed.contains(id) &&
+                perInstance=request.value("client_instance_supported").toBool();
+                if (request.value("schema").toInt() == 1 && validId.match(id).hasMatch() && !(perInstance?instanceCompleted:completed).contains(id) &&
                         expiry > now && expiry <= now + 900 && !cancelled->load()) {
-                    const QJsonObject bundle{{"schema",1},{"request_id",id},{"report",context},
+                    QJsonObject bundle{{"schema",1},{"request_id",id},{"report",context},
                                             {"log_tail",DiagnosticLog::tail()}};
+                    if (perInstance) bundle["client_instance"]=instance;
                     if (QJsonDocument(bundle).toJson(QJsonDocument::Compact).size() <= MaxSupportBytes &&
                             sender(bundle,cancelled) == 202 && !cancelled->load()) delivered = id;
                 }
             }
         } catch (...) { } // Support failures never mutate sign-in or the stream.
-        if (self) QMetaObject::invokeMethod(self, [self,delivered,identity,cancelled] {
+        if (self) QMetaObject::invokeMethod(self, [self,delivered,identity,cancelled,perInstance] {
             if (!self) return;
             if (!delivered.isEmpty() && !cancelled->load() && self->m_Identity == identity) {
-                self->m_CompletedSupport.append(delivered);
-                while (self->m_CompletedSupport.size() > 32) self->m_CompletedSupport.removeFirst();
-                QSettings().setValue("diagnosticSupportCompleted/"+identity,self->m_CompletedSupport);
+                auto& complete=perInstance?self->m_CompletedInstanceSupport:self->m_CompletedSupport;
+                complete.append(delivered);while (complete.size()>32) complete.removeFirst();
+                if (!perInstance) QSettings().setValue("diagnosticSupportCompleted/"+identity,complete);
             }
             self->completeWork();
         }, Qt::QueuedConnection);
     });
 }
+void BetaDiagnostics::setNetworkTransport(DiagnosticNetworkProbe::Endpoint endpoint, SupportPoller poller,
+                                          NetworkStarter starter, Sender sender, NetworkRunner runner) {
+    m_NetworkEndpoint=std::move(endpoint); m_NetworkPoller=std::move(poller);
+    m_NetworkStarter=std::move(starter); m_NetworkSender=std::move(sender);
+    m_NetworkRunner=runner?std::move(runner):NetworkRunner(DiagnosticNetworkProbe::run);
+    QTimer::singleShot(1000,this,&BetaDiagnostics::pollNetwork);
+}
+
+void BetaDiagnostics::pollNetwork() {
+    if (!m_Enabled || m_Identity.isEmpty() || m_NetworkBusy || !m_NetworkPoller ||
+        !m_NetworkStarter || !m_NetworkSender || m_NetworkCancel->load()) return;
+    m_NetworkBusy=true;
+    const auto cancelled=m_NetworkCancel; const auto identity=m_Identity;
+    const auto completed=m_CompletedNetwork; const auto pending=m_NetworkPending;
+    const auto poller=m_NetworkPoller; const auto starter=m_NetworkStarter;
+    const auto sender=m_NetworkSender; const auto runner=m_NetworkRunner; const auto endpoint=m_NetworkEndpoint;
+    const auto instance=m_NetworkInstance;
+    QJsonObject context=!m_Report.isEmpty()?snapshot().value("report").toObject():m_LastReport;
+    if (context.isEmpty()) context=report(QUuid::createUuid().toString(QUuid::Id128),displays());
+    QPointer<BetaDiagnostics> self(this);
+    m_NetworkWorker.start([self,cancelled,identity,instance,completed,pending,poller,starter,sender,runner,endpoint,context] {
+        QJsonObject bundle=pending; QString retired;
+        try {
+            QSettings preferences; preferences.sync();
+            if (!cancelled->load() && preferences.value("betaDiagnosticsEnabled",true).toBool()) {
+                if (bundle.isEmpty()) {
+                    const auto request=poller(cancelled);
+                    const auto id=request.value("request_id").toString();
+                    static const QRegularExpression identifier(QStringLiteral("^[0-9a-f]{32}$"));
+                    const auto now=QDateTime::currentSecsSinceEpoch();
+                    const auto persisted=preferences.value("diagnosticNetworkCompleted/"+identity).toStringList();
+                    if (request.value("schema").toInt()==1 && identifier.match(id).hasMatch() && !completed.contains(id) && !persisted.contains(id) &&
+                        request.value("expires_unix").toInteger()>now+150 && request.value("expires_unix").toInteger()<=now+900) {
+                        const auto grant=starter(QJsonObject{{"request_id",id},{"client_instance",instance}},cancelled);
+                        if (grant.value("schema").toInt()==1 && grant.value("request_id").toString()==id &&
+                            grant.value("client_instance").toString()==instance && identifier.match(grant.value("probe_id").toString()).hasMatch() && !cancelled->load()) {
+                            const auto measured=runner(endpoint,grant,cancelled);
+                            if (!cancelled->load()) bundle={{"schema",1},{"request_id",id},
+                                {"probe_id",grant.value("probe_id")},{"client_instance",instance},{"report",context},{"network",measured}};
+                        }
+                    }
+                }
+                if (!bundle.isEmpty() && !cancelled->load() &&
+                    QJsonDocument(bundle).toJson(QJsonDocument::Compact).size()<=MaxSupportBytes) {
+                    const int status=sender(bundle,cancelled);
+                    if (status==202 || status==403 || status==404) {
+                        retired=bundle.value("request_id").toString(); bundle={};
+                    }
+                }
+            }
+        } catch (...) { } // Keep a bounded completed result for a later control-path retry.
+        if (self) QMetaObject::invokeMethod(self,[self,cancelled,identity,bundle,retired] {
+            if (!self) return;
+            if (!cancelled->load() && self->m_Identity==identity) {
+                self->m_NetworkPending=bundle;
+                if (!retired.isEmpty()) {
+                    self->m_CompletedNetwork.append(retired);
+                    while (self->m_CompletedNetwork.size()>32) self->m_CompletedNetwork.removeFirst();
+                    QSettings().setValue("diagnosticNetworkCompleted/"+identity,self->m_CompletedNetwork);
+                }
+            }
+            self->m_NetworkBusy=false;
+            emit self->networkWorkFinished();
+        },Qt::QueuedConnection);
+    });
+}
+
 QJsonObject BetaDiagnostics::report(const QString& id, const QJsonArray& displays) {
 #ifdef Q_OS_WIN32
     const QString platform = "windows";
