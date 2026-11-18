@@ -156,13 +156,14 @@ struct WindowsPenInput::Impl {
         queue.push_back(sample);
     }
     void closeContext() {
-        if (context && close) close(context);
+        const auto previous = context;
         context = nullptr; contextWindow = nullptr; pressureValid = false; driving = false;
+        if (previous && close) close(previous);
     }
     void reset() {
         if (forwarded) { Sample cancel; cancel.cancel = true; forwarded = false; sink(cancel); }
         closeContext(); queue.clear(); authority.reset(); fractionX.reset(); fractionY.reset();
-        device = nullptr; lastInk = 0; waitForLift = true;
+        device = nullptr; lastInk = 0; inkTiltX = inkTiltY = 0; waitForLift = true;
     }
     void openContext(HWND handle) {
         if (!handle || handle == contextWindow ||

@@ -2829,6 +2829,11 @@ bool Session::createSecondaryWindows(Uint32 defaultWindowFlags, const std::strin
 
 void Session::destroySecondaryWindows()
 {
+#ifdef Q_OS_WIN
+    // Win32 can dispatch messages while windows are being retired. Stop
+    // native input/overlay callbacks before any SDL window pointer expires.
+    if (m_InputHandler) m_InputHandler->suspendWindowsPresentation();
+#endif
     for (SDL_Window* window : std::as_const(m_SecondaryWindows)) {
         SDL_DestroyWindow(window);
     }

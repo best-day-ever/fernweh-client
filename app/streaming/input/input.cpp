@@ -367,6 +367,9 @@ void SdlInputHandler::setWindow(SDL_Window *window)
 void SdlInputHandler::setPresentationLayout(
         const PlankPresentationLayout& layout)
 {
+#ifdef Q_OS_WIN
+    suspendWindowsPresentation();
+#endif
     cancelImmersiveMouse();
     hideSharedPointer();
     m_PresentationLayout = layout;
@@ -382,6 +385,10 @@ void SdlInputHandler::setPresentationLayout(
     reconcileWaylandTabletCursorOutputs();
     updateTabletCursorVisibility();
     updatePointerRegionLock();
+#ifdef Q_OS_WIN
+    m_WindowsPresentationChanging = false;
+    refreshNormalizedPen();
+#endif
 }
 
 void SdlInputHandler::setLiveDrawableGeometry(bool live)
@@ -1242,6 +1249,12 @@ void SdlInputHandler::updateTabletCursorVisibility()
 
 void SdlInputHandler::refreshNormalizedPen()
 {
+#ifdef Q_OS_WIN
+    if (m_WindowsPresentationChanging) {
+        if (m_SdlPenInput) m_SdlPenInput->setActive(false);
+        return;
+    }
+#endif
     if (!m_SdlPenInput) return;
     bool raw = false;
 #ifdef Q_OS_WIN
@@ -1465,7 +1478,7 @@ void SdlInputHandler::updateSharedPointer()
 #ifdef Q_OS_WIN
 void SdlInputHandler::updateWindowsCursor()
 {
-    if (!m_LocalCursorSupported) { m_WindowsCursor.reset(); return; }
+    if (m_WindowsPresentationChanging || !m_LocalCursorSupported) { m_WindowsCursor.reset(); return; }
     if (!m_WindowsCursor) {
         m_WindowsCursorGeneration = UINT64_MAX;
         m_WindowsCursor = PlankWin32Cursor::create([this](SDL_Window*& window, int& x, int& y) {
@@ -1495,7 +1508,7 @@ void SdlInputHandler::updateWindowsCursor()
 #ifdef Q_OS_WIN
 bool SdlInputHandler::windowsPenAllowed()
 {
-    if (!m_SdlPenInput || m_ViewOnly || !isCaptureActive() ||
+    if (m_WindowsPresentationChanging || !m_SdlPenInput || m_ViewOnly || !isCaptureActive() ||
             (m_WindowsRawWacomInput && m_WindowsRawWacomInput->attached())) return false;
     if (m_Window && (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_INPUT_FOCUS)) return true;
     for (const auto& output : m_PresentationLayout.outputs)
@@ -1518,5 +1531,15 @@ void SdlInputHandler::pollWindowsPen()
 bool SdlInputHandler::nativePenOwnsPointer() const
 {
     return m_WindowsPenInput && m_WindowsPenInput->ownsPointer();
+}
+#endif
+
+#ifdef Q_OS_WIN
+void SdlInputHandler::suspendWindowsPresentation()
+{
+    m_WindowsPresentationChanging = true;
+    if (m_WindowsPenInput) m_WindowsPenInput->reset();
+    if (m_SdlPenInput) m_SdlPenInput->setActive(false);
+    m_WindowsCursor.reset();
 }
 #endif
