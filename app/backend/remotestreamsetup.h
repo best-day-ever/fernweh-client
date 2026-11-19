@@ -8,9 +8,8 @@
 // built-in default at the bottom. Header-only so the broker test suite can
 // exercise it without the GUI.
 //
-// Nothing here substitutes a profile silently: resolve() only picks which
-// layer applies, and problemFor() reports a choice the workstation cannot
-// use so the caller can ask the user instead of launching something else.
+// resolve() picks the settings layer. Only the built-in Linux setting uses
+// automatic profile selection. Saved choices keep their exact profile.
 
 #include "settings/streamingpreferences.h"
 
@@ -431,6 +430,25 @@ inline QString problemFor(int captureSource, int profile, const Capabilities& ca
 inline QString problemFor(const Setup& setup, const Capabilities& caps)
 {
     return problemFor(setup.captureSource, setup.videoProfile, caps);
+}
+
+inline QVector<int> automaticNvencProfiles(const Capabilities& caps)
+{
+    using P = StreamingPreferences;
+    QVector<int> profiles;
+    if (caps.platform != LinuxPlatform || caps.encodingModes.isEmpty()) {
+        return profiles;
+    }
+    for (const int profile : {P::PLANK_PROFILE_NVENC_HEVC_10BIT_444,
+                              P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                              P::PLANK_PROFILE_NVENC_HEVC_10BIT_420,
+                              P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                              P::PLANK_PROFILE_NVENC_H264_8BIT_444}) {
+        if (problemFor(P::PLANK_CAPTURE_NVFBC_8BIT, profile, caps).isEmpty()) {
+            profiles.append(profile);
+        }
+    }
+    return profiles;
 }
 
 }

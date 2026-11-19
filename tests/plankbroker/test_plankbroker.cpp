@@ -438,6 +438,7 @@ private slots:
     void remoteStreamSetupLayersDefaults();
     void remoteStreamSetupSeedsOnlyFromExactBookmark();
     void remoteStreamSetupReportsUnusableChoice();
+    void remoteStreamSetupRanksAdvertisedNvencProfiles();
     void remoteStreamSetupCachesCapabilities();
     void remoteStreamSetupCachesDisplayCapabilities();
 };
@@ -4227,10 +4228,30 @@ void TestPlankBroker::remoteStreamSetupReportsUnusableChoice()
     QCOMPARE(r.source, RemoteStreamSetup::FromHost);
     QCOMPARE(r.setup.videoProfile, hevc10);
     QVERIFY(!RemoteStreamSetup::problemFor(r.setup, noHevc10Fbc).isEmpty());
-    // The built-in default is reported too rather than swapped for another.
-    const RemoteStreamSetup::Resolution builtIn = RemoteStreamSetup::resolve(
-                RemoteStreamSetup::Setup(), nullptr, RemoteStreamSetup::Setup(), RemoteStreamSetup::LinuxPlatform);
-    QVERIFY(!RemoteStreamSetup::problemFor(builtIn.setup, noHevc10Fbc).isEmpty());
+}
+
+void TestPlankBroker::remoteStreamSetupRanksAdvertisedNvencProfiles()
+{
+    using P = StreamingPreferences;
+    const QStringList modes{QStringLiteral("h264-8-444-nvenc"), QStringLiteral("hevc-10-420-nvenc"),
+                            QStringLiteral("hevc-10-444-nvenc"), QStringLiteral("h264-8-420-nvenc"),
+                            QStringLiteral("hevc-8-444-nvenc"), QStringLiteral("h264-10-444-software")};
+    const auto full = linuxHost(RemoteStreamSetup::NvfbcHevc10NvencFeature |
+                                RemoteStreamSetup::NvfbcNvenc420Feature, modes);
+    const QVector<int> expected{P::PLANK_PROFILE_NVENC_HEVC_10BIT_444,
+                                P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                                P::PLANK_PROFILE_NVENC_HEVC_10BIT_420,
+                                P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                                P::PLANK_PROFILE_NVENC_H264_8BIT_444};
+    QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(full), expected);
+
+    const QVector<int> older{P::PLANK_PROFILE_NVENC_HEVC_8BIT_444, P::PLANK_PROFILE_NVENC_H264_8BIT_444};
+    QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(linuxHost(0, modes)), older);
+    QVERIFY(RemoteStreamSetup::automaticNvencProfiles(linuxHost(full.featureFlags, {})).isEmpty());
+    QVERIFY(RemoteStreamSetup::automaticNvencProfiles(linuxHost(full.featureFlags, {modes.last()})).isEmpty());
+    auto mac = full;
+    mac.platform = RemoteStreamSetup::MacPlatform;
+    QVERIFY(RemoteStreamSetup::automaticNvencProfiles(mac).isEmpty());
 }
 
 void TestPlankBroker::remoteStreamSetupCachesCapabilities()

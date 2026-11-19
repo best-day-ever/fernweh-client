@@ -482,6 +482,7 @@ private:
                            DecoderSelectionMode::PreferExactHardwareThenSoftware);
 
     bool isIdentityGbrEnabledForFormat(int videoFormat) const;
+    bool selectAutomaticVideoProfile(SDL_Window* testWindow);
     DecoderCaptureSource decoderCaptureSource() const;
     DecoderEncoderBackend decoderEncoderBackend() const;
 

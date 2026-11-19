@@ -6,6 +6,7 @@
 #include "session.h"
 #include "videopipelineprogress.h"
 #include "backend/macsharedsession.h"
+#include "backend/remotestreamsetup.h"
 #include "sessionguidispatch.h"
 #include "backend/collaboration.h"
 #include "planksharinghud.h"
@@ -548,6 +549,47 @@ bool Session::isIdentityGbrEnabledForFormat(int videoFormat) const
             videoFormat == VIDEO_FORMAT_H265_REXT8_444 ||
             videoFormat == VIDEO_FORMAT_H265_REXT10_444) &&
            (m_Computer->serverCodecModeSupport & SCM_IDENTITY_GBR_444);
+}
+
+bool Session::selectAutomaticVideoProfile(SDL_Window* testWindow)
+{
+    if (!m_Computer->plankAutomaticVideoProfile) return true;
+
+    RemoteStreamSetup::Capabilities caps;
+    caps.known = true;
+    caps.platform = RemoteStreamSetup::LinuxPlatform;
+    caps.featureFlags = m_PlankLaunchFeatureFlags;
+    caps.encodingModes = m_Computer->plankEncodingModes;
+    const int width = m_StreamConfig.width;
+    const int height = m_StreamConfig.height;
+    const auto original = m_PlankVideoProfile;
+    for (const int profile : RemoteStreamSetup::automaticNvencProfiles(caps)) {
+        const auto* encoding = plank_encoding_profile(profile);
+        const int format = encoding->video_format;
+        const bool identity = isIdentityGbrEnabledForFormat(format);
+        SupportedVideoFormatList candidate;
+        candidate.append(format);
+        if (!candidate.maskByServerCodecModes(m_Computer->serverCodecModeSupport) ||
+                ((format & VIDEO_FORMAT_MASK_YUV444) && !identity) ||
+                !plank_encoding_explicit_dimensions(encoding, width, height)) {
+            continue;
+        }
+        IVideoDecoder* decoder = nullptr;
+        if (chooseDecoder(format, width, height, m_StreamConfig.fps, false, true, decoder,
+                          identity, decoderCaptureSource(), DecoderEncoderBackend::NvencDirect,
+                          m_RendererFactory, testWindow, false, DecoderSelectionMode::ExactHardwareOnly)) {
+            delete decoder;
+            m_PlankVideoProfile = static_cast<StreamingPreferences::PlankVideoProfile>(profile);
+            m_PlankBitrateKbps = StreamingPreferences::plankBitrateForProfile(
+                        m_Computer->plankProfileBitratesKbps, profile);
+            qInfo() << "Automatic video profile:" << encoding->mode << "(hardware decoder verified)";
+            return m_PlankVideoProfile == original || configurePlankLaunchGeometry();
+        }
+    }
+    qInfo() << "Automatic video profile: keeping"
+            << StreamingPreferences::plankEncodingMode(original)
+            << "(no automatic profile passed hardware validation)";
+    return true;
 }
 
 int Session::drSetup(int videoFormat, int width, int height, int frameRate, void *, int)
@@ -2066,6 +2108,9 @@ bool Session::initialize(IFFmpegRendererFactory* presenter)
     m_StreamConfig.fps = (m_Computer->plankAuthentication ||
                           m_PlankCaptureSource == StreamingPreferences::PLANK_CAPTURE_SCREENCAPTUREKIT) ?
                 StreamingPreferences::PlankFramesPerSecond : m_Preferences->fps;
+    if (!selectAutomaticVideoProfile(testWindow)) {
+        return false;
+    }
     m_StreamConfig.bitrate = m_PlankBitrateKbps;
 
     qInfo("Video bitrate: %d kbps",
@@ -5151,7 +5196,11 @@ bool Session::runPlankReconnect()
             if (PlankReconnectPolicy::terminalStatus(error.getStatusCode(), authenticating,
                                                      openingDesktop)) {
                 m_Lifecycle.stop();
-                emit displayLaunchError(error.toQString());
+                if (authenticating && isPlankBrokered() && error.getStatusCode() == 401) {
+                    emit displayLaunchError(tr("The stream disconnected and the workstation declined the reconnect. Connect again from the Remote list."));
+                } else {
+                    emit displayLaunchError(error.toQString());
+                }
             } else if (openingDesktop && authenticating && error.getStatusCode() == 401) {
                 qInfo() << "PLANK desktop worker is changing; retrying broker admission";
             }
@@ -6264,8 +6313,11 @@ void Session::execInternal()
                 if (!finishPlankReconnect(
                             reconnectSucceeded, reconnectState)) {
                     m_Diagnostics.end(SessionDiagnostics::End::ReconnectFailed);
-                    emit displayLaunchError(
-                                tr("The workstation desktop changed, but the client could not reconnect."));
+                    if (!m_Lifecycle.stopping()) {
+                        emit displayLaunchError(reconnectState.openingDesktop ?
+                                    tr("The workstation desktop changed, but the client could not reconnect.") :
+                                    tr("The stream disconnected and the client could not reconnect."));
+                    }
                     goto DispatchDeferredCleanup;
                 }
                 break;

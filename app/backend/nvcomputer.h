@@ -149,6 +149,7 @@ public:
     QStringList plankSessionClientDisplays;
     QString plankSessionTargetDisplay;
     QString plankSessionDisplayNotice;
+    bool plankAutomaticVideoProfile = false; // Built-in broker settings only.
 
     // Persisted traits
     NvAddress localAddress;

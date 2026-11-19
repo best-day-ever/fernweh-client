@@ -716,8 +716,15 @@ NvComputer* prepareBrokeredComputer(const PlankBroker::Lease& lease, const QStri
         if (macPreparation.mode.isEmpty()) throw DisplaySettingsRequired { reason };
     }
 
-    const RemoteStreamSetup::Resolution resolution = RemoteStreamSetup::resolve(
+    RemoteStreamSetup::Resolution resolution = RemoteStreamSetup::resolve(
                 stream.host, stream.seeded ? &stream.seed : nullptr, stream.defaults, capabilities.platform);
+    const bool automatic = !macHost && resolution.source == RemoteStreamSetup::FromBuiltIn;
+    if (automatic) {
+        const auto profiles = RemoteStreamSetup::automaticNvencProfiles(capabilities);
+        if (!profiles.isEmpty()) {
+            resolution.setup.videoProfile = profiles.front();
+        }
+    }
     const QString problem = RemoteStreamSetup::problemFor(resolution.setup, capabilities);
     if (!problem.isEmpty()) {
         qWarning() << "Remote stream settings do not fit" << hostId << ": profile"
@@ -736,6 +743,7 @@ NvComputer* prepareBrokeredComputer(const PlankBroker::Lease& lease, const QStri
             address, hostName, resolution.setup.videoProfile, resolution.setup.captureSource, bitrates));
     {
         QWriteLocker lock(&computer->lock);
+        computer->plankAutomaticVideoProfile = automatic;
         // Connecting always has a display setup chosen for this workstation.
         if (display.configured) {
             computer->plankScalingMode = display.scalingMode;

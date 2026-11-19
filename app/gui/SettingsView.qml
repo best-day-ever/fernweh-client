@@ -1234,7 +1234,7 @@ Flickable {
                 }
 
                 PlankSettingHelp {
-                    text: qsTr("Used for every remote workstation that has no stream settings of its own. The built-in default is H.265 10-bit 4:4:4 (NVENC) at 50 Mbps on both routes.")
+                    text: qsTr("Used for remote workstations that have no stream settings of their own. Restore default quality to choose an encoding automatically based on hardware support.")
                 }
 
                 // Touch ID sign-in (bde-linux docs/plank-broker.md 13.4): a
