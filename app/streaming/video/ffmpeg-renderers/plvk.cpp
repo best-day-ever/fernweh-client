@@ -755,9 +755,11 @@ bool PlVkRenderer::mapAvFrameToPlacebo(const AVFrame *frame, pl_frame* mappedFra
         mappedFrame->color.hdr.min_luma = PL_COLOR_HDR_BLACK;
     }
 
-    // Keep mapped frames consistent with the full range requested by
-    // getDecoderColorRange().
-    mappedFrame->repr.levels = PL_COLOR_LEVELS_FULL;
+    // Both upload paths map explicit AVFrame range metadata. Only use the
+    // requested full range as a fallback for streams that omit the tag.
+    if (frame->color_range == AVCOL_RANGE_UNSPECIFIED) {
+        mappedFrame->repr.levels = PL_COLOR_LEVELS_FULL;
+    }
 
     return true;
 }
