@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <limits>
@@ -9,6 +10,25 @@
 class PlankReconnectPolicy
 {
 public:
+    // A greeter handoff deliberately stops the old Host worker. Give the new
+    // worker and its first authenticated launch time before auto-disconnecting.
+    // Ask mode still reports a delay at the user's configured time.
+    uint64_t startSdlRecovery(uint64_t now, uint64_t timeoutMs,
+                              bool disconnectOnTimeout, bool openingDesktop)
+    {
+        constexpr uint64_t DesktopHandoffTimeoutMs = 60000;
+        if (disconnectOnTimeout && openingDesktop) {
+            timeoutMs = std::max(timeoutMs, DesktopHandoffTimeoutMs);
+        }
+        const uint64_t noticeDeadline = now + timeoutMs;
+        if (disconnectOnTimeout) {
+            allowUntil(noticeDeadline);
+        } else {
+            allowContinuously();
+        }
+        return noticeDeadline;
+    }
+
     void allowUntil(uint64_t deadline) { m_Deadline.store(deadline); }
     void allowContinuously() { allowUntil(std::numeric_limits<uint64_t>::max()); }
     bool allowsRequest(uint64_t now) const { return now < m_Deadline.load(); }
