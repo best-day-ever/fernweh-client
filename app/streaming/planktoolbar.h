@@ -102,6 +102,11 @@ private:
     void endLocalPointerInteraction();
     void createWaylandToolbar();
     void createWaylandReconnectPrompt();
+#ifdef Q_OS_WIN
+    bool showWindowsReconnectNotice(const QString& text);
+    void positionWindowsReconnectNotice();
+    void closeWindowsReconnectNotice();
+#endif
     void redraw();
     void redrawReconnectPrompt();
     void reconnectPromptPointerEnter(int parentX, int surfaceY);
@@ -142,6 +147,9 @@ private:
     StreamingPreferences& m_Preferences;
     std::unique_ptr<PlankWaylandToolbar> m_WaylandToolbar;
     std::unique_ptr<PlankWaylandToolbar> m_WaylandReconnectPrompt;
+#ifdef Q_OS_WIN
+    void* m_WindowsReconnectNotice = nullptr;
+#endif
     QString m_ReconnectStatus;
     bool m_ReconnectStatusWarning = false;
     Action m_PendingAction;

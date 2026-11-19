@@ -4934,8 +4934,8 @@ void Session::setPlankReconnectStatus(const char* text, bool warning)
     const bool nativeStatus = m_PlankToolbar &&
             m_PlankToolbar->setReconnectStatus(QString::fromUtf8(text), warning);
     // Reconnect pauses video, so an overlay alone cannot reliably repaint.
-    // Use the native local surface on Wayland; keep the existing fallback for
-    // other presentation platforms without duplicating the message.
+    // Use the native local surface when available without duplicating it
+    // in the video overlay.
     m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
     if (!nativeStatus && text[0] != '\0') {
         m_OverlayManager.setOverlayColor(Overlay::OverlayStatusUpdate,
@@ -4982,6 +4982,7 @@ bool Session::beginPlankReconnect(
                 openingDesktop ? "Opening your desktop..." : "Waiting for workstation...", false);
 
     state = {};
+    state.openingDesktop = openingDesktop;
     // The remote cursor transport stops with the host connection. Return
     // pointer ownership to the local compositor immediately so the user can
     // still see and navigate the whole client window while reconnecting. The
@@ -6001,7 +6002,6 @@ void Session::execInternal()
                 m_PlankToolbar->hideReconnectPrompt();
                 reconnectDecisionDeadline = PlankClock::milliseconds() +
                         static_cast<Uint64>(m_Preferences->plankUnreachableTimeoutSeconds) * 1000;
-                m_ReconnectPolicy.allowUntil(reconnectDecisionDeadline);
                 setPlankReconnectStatus("Waiting for workstation...", false);
             }
             if (action == PlankToolbar::Action::ToggleFullscreen) {
@@ -6047,8 +6047,7 @@ void Session::execInternal()
             if (m_Preferences->plankUnreachableAction ==
                     StreamingPreferences::PLANK_UNREACHABLE_DISCONNECT) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "PLANK host remained unreachable for %d seconds; disconnecting automatically",
-                            m_Preferences->plankUnreachableTimeoutSeconds);
+                            "PLANK reconnect deadline expired; disconnecting automatically");
                 m_Diagnostics.end(SessionDiagnostics::End::ReconnectTimeout);
                 goto DispatchDeferredCleanup;
             }
@@ -6238,9 +6237,12 @@ void Session::execInternal()
                                 tr("The workstation desktop changed, but the client could not start reconnecting."));
                     goto DispatchDeferredCleanup;
                 }
-                reconnectDecisionDeadline = PlankClock::milliseconds() +
-                        static_cast<Uint64>(m_Preferences->plankUnreachableTimeoutSeconds) * 1000;
-                m_ReconnectPolicy.allowUntil(reconnectDecisionDeadline);
+                reconnectDecisionDeadline = m_ReconnectPolicy.startSdlRecovery(
+                        PlankClock::milliseconds(),
+                        static_cast<Uint64>(m_Preferences->plankUnreachableTimeoutSeconds) * 1000,
+                        m_Preferences->plankUnreachableAction ==
+                            StreamingPreferences::PLANK_UNREACHABLE_DISCONNECT,
+                        reconnectState.openingDesktop);
                 reconnectThread = new PlankReconnectThread(this);
                 reconnectThread->start();
                 break;

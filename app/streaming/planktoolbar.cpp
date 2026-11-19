@@ -22,6 +22,9 @@
 #ifdef HAS_WAYLAND
 #include <linux/input-event-codes.h>
 #endif
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 
 namespace {
 constexpr int ToolbarHeight = 39;
@@ -204,6 +207,9 @@ void PlankToolbar::createWaylandToolbar()
 
 PlankToolbar::~PlankToolbar()
 {
+#ifdef Q_OS_WIN
+    closeWindowsReconnectNotice();
+#endif
     endLocalPointerInteraction();
     m_InputHandler.setLocalToolbarAvailable(false);
     m_OverlayManager.setOverlayState(Overlay::OverlayToolbar, false);
@@ -288,6 +294,9 @@ bool PlankToolbar::setReconnectStatus(const QString& text, bool warning)
 {
     m_ReconnectStatus = text;
     m_ReconnectStatusWarning = warning;
+#ifdef Q_OS_WIN
+    return showWindowsReconnectNotice(text);
+#else
     if (!m_WaylandReconnectPrompt) return false;
     if (m_ReconnectPromptVisible || !m_ReconnectStatus.isEmpty()) {
         redrawReconnectPrompt();
@@ -296,6 +305,7 @@ bool PlankToolbar::setReconnectStatus(const QString& text, bool warning)
         m_WaylandReconnectPrompt->setVisible(false);
     }
     return true;
+#endif
 }
 
 void PlankToolbar::showReconnectPrompt(int unreachableSeconds)
@@ -310,12 +320,80 @@ void PlankToolbar::showReconnectPrompt(int unreachableSeconds)
         redrawReconnectPrompt();
         m_WaylandReconnectPrompt->setVisible(true);
     } else {
+#ifdef Q_OS_WIN
+        if (showWindowsReconnectNotice(
+                QStringLiteral("Still reconnecting. Press Ctrl+Alt+Shift+Q to disconnect."))) {
+            return;
+        }
+#endif
         m_OverlayManager.updateOverlayText(
                     Overlay::OverlayStatusUpdate,
                     "Workstation unreachable. Use the toolbar X to disconnect, or wait while PLANK retries.");
         m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
     }
 }
+
+#ifdef Q_OS_WIN
+bool PlankToolbar::showWindowsReconnectNotice(const QString& text)
+{
+    if (text.isEmpty()) {
+        closeWindowsReconnectNotice();
+        return true;
+    }
+
+    const auto parent = static_cast<HWND>(SDL_GetPointerProperty(
+            SDL_GetWindowProperties(m_Window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    if (!parent) {
+        return false;
+    }
+
+    // A local child window paints even while the decoder and video compositor
+    // are suspended. It stays with the stream without taking keyboard focus.
+    auto notice = static_cast<HWND>(m_WindowsReconnectNotice);
+    if (!notice) {
+        notice = CreateWindowExW(WS_EX_NOPARENTNOTIFY, L"STATIC", L"",
+                WS_CHILD | WS_BORDER | SS_CENTER | SS_CENTERIMAGE | SS_NOPREFIX,
+                0, 0, 0, 0, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!notice) {
+            return false;
+        }
+        SendMessageW(notice, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
+        m_WindowsReconnectNotice = notice;
+    }
+    SetWindowTextW(notice, reinterpret_cast<const wchar_t*>(text.utf16()));
+    positionWindowsReconnectNotice();
+    RedrawWindow(notice, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+    return true;
+}
+
+void PlankToolbar::positionWindowsReconnectNotice()
+{
+    const auto notice = static_cast<HWND>(m_WindowsReconnectNotice);
+    if (!notice) {
+        return;
+    }
+
+    const HWND parent = GetParent(notice);
+    RECT bounds {};
+    if (!GetClientRect(parent, &bounds)) {
+        return;
+    }
+    const int dpi = std::max<int>(USER_DEFAULT_SCREEN_DPI, GetDpiForWindow(parent));
+    const int width = std::min<int>(bounds.right, MulDiv(540, dpi, USER_DEFAULT_SCREEN_DPI));
+    const int height = std::min<int>(bounds.bottom, MulDiv(44, dpi, USER_DEFAULT_SCREEN_DPI));
+    SetWindowPos(notice, HWND_TOP, (bounds.right - width) / 2, (bounds.bottom - height) / 2,
+                 width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+void PlankToolbar::closeWindowsReconnectNotice()
+{
+    if (m_WindowsReconnectNotice) {
+        DestroyWindow(static_cast<HWND>(m_WindowsReconnectNotice));
+        m_WindowsReconnectNotice = nullptr;
+    }
+}
+#endif
 
 void PlankToolbar::hideReconnectPrompt()
 {
@@ -379,6 +457,9 @@ void PlankToolbar::notifyWindowChanged()
     SDL_GetWindowSize(m_Window, &m_WindowWidth, &m_WindowHeight);
     SDL_GetWindowSizeInPixels(m_Window, &m_WindowPixelWidth,
                               &m_WindowPixelHeight);
+#ifdef Q_OS_WIN
+    positionWindowsReconnectNotice();
+#endif
     m_PixelDensity = PlankToolbarLogic::resolvePixelDensity(
                 SDL_GetWindowPixelDensity(m_Window),
                 m_WindowWidth, m_WindowHeight,

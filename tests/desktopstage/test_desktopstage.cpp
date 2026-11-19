@@ -51,6 +51,37 @@ private slots:
         }
     }
 
+    void sdlHandoffAdmissionCanContinuePastTheNotice()
+    {
+        PlankReconnectPolicy policy;
+        QCOMPARE(policy.startSdlRecovery(1000, 15000, false, true), uint64_t(16000));
+        QVERIFY(policy.allowsRequest(16000));
+        // The broker accepted a connection just after the original prompt.
+        // The following poll must still be able to authenticate and launch.
+        QVERIFY(policy.allowsRequest(17700));
+        QVERIFY(policy.allowsRequest(43000));
+        QVERIFY(!PlankReconnectPolicy::terminalStatus(409, true));
+        QVERIFY(PlankReconnectPolicy::terminalStatus(403, true, true));
+        policy.allowUntil(0);
+        QVERIFY(!policy.allowsRequest(43000));
+    }
+
+    void sdlAutomaticDisconnectAllowsTimeForAPlannedHandoff()
+    {
+        PlankReconnectPolicy policy;
+        QCOMPARE(policy.startSdlRecovery(1000, 15000, true, true), uint64_t(61000));
+        QVERIFY(policy.allowsRequest(43000));
+        QVERIFY(!policy.allowsRequest(61000));
+        QCOMPARE(policy.startSdlRecovery(1000, 90000, true, true), uint64_t(91000));
+        QVERIFY(policy.allowsRequest(90999));
+        QVERIFY(!policy.allowsRequest(91000));
+
+        // An ordinary outage still obeys the user's automatic disconnect time.
+        QCOMPARE(policy.startSdlRecovery(1000, 15000, true, false), uint64_t(16000));
+        QVERIFY(policy.allowsRequest(15999));
+        QVERIFY(!policy.allowsRequest(16000));
+    }
+
     void displayTransitionReauthenticatesUntilReplacementIsReady()
     {
         PlankDisplayTransitionPolicy transition(120000);

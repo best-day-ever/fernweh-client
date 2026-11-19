@@ -305,6 +305,7 @@ private:
                               bool takeOverActiveSession = false);
 
     struct PlankReconnectState {
+        bool openingDesktop = false;
         bool retainedRenderer = false;
         bool inputCaptureWasActive = false;
         int videoFormat = 0;
