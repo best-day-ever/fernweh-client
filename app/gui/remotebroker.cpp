@@ -19,6 +19,7 @@
 
 #include <QDebug>
 #include <QGuiApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QSettings>
 #include <QElapsedTimer>
@@ -1112,6 +1113,10 @@ void RemoteBroker::finishStreamBenchmark(const QString& reason)
             {"fecAfter", run.lossSamples > 0 ? run.fecAfter / run.lossSamples : -1},
             {"recommended", i == choice}
         });
+    }
+    if (!rows.isEmpty()) {
+        qInfo().noquote() << "Fernweh stream benchmark:"
+                          << QJsonDocument(QJsonArray::fromVariantList(rows)).toJson(QJsonDocument::Compact);
     }
     m_Benchmark = {};
     emit stateChanged();
