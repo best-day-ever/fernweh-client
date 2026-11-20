@@ -12,6 +12,7 @@ struct Run
     static constexpr double minimumCaptureFraction = 0.75;
     static constexpr double minimumBitrateFraction = 0.05;
     static constexpr double minimumMotionFraction = 0.80;
+    static constexpr double minimumPresentationFraction = 0.80;
 
     QJsonObject mode;
     double seconds = 0;
@@ -92,7 +93,7 @@ struct Run
     {
         const int fps = mode.value("fps").toInt();
         return exercisedWorkload() && hardware &&
-                presentedFps() >= fps * 0.95 && worstPresentedFps >= fps * 0.80;
+                presentedFps() >= fps * 0.95 && worstPresentedFps >= fps * minimumPresentationFraction;
     }
 };
 

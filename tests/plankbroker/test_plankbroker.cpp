@@ -4262,8 +4262,11 @@ void TestPlankBroker::streamBenchmarkRequiresSustainedHardwarePresentation()
     QCOMPARE(StreamBenchmark::recommend({briefPause}), 0);
     QCOMPARE(StreamBenchmark::recommend({measured(true, 59, 9)}), -1);
     auto stalled = good;
-    stalled.add({{"seconds", 1}, {"received", 60}, {"presented", 20}, {"hardware", true}});
-    QVERIFY(stalled.presentedFps() >= 56);
+    stalled.add({{"seconds", 1}, {"received", 60}, {"presented", 46}, {"hardware", true},
+                 {"freshCaptures", 59}, {"bytes", 1500000}});
+    QVERIFY(stalled.exercisedWorkload());
+    QVERIFY(stalled.presentedFps() >= 57);
+    QCOMPARE(stalled.worstPresentedFps, 46.0);
     QVERIFY(!stalled.meetsTarget());
     QCOMPARE(StreamBenchmark::recommend({software, laggy, good}), 2);
     QCOMPARE(StreamBenchmark::recommend({software, laggy, stalled}), -1);

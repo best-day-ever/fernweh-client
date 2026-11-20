@@ -1105,6 +1105,8 @@ void RemoteBroker::finishStreamBenchmark(const QString& reason)
             {"received", run.seconds > 0 ? run.received / run.seconds : 0},
             {"decoded", run.seconds > 0 ? run.decoded / run.seconds : 0},
             {"presented", run.presentedFps()}, {"hardware", run.hardware && run.windows > 0},
+            {"lowestPresented", run.windows > 0 ? run.worstPresentedFps : -1},
+            {"presentationFloor", run.mode.value("fps").toInt() * StreamBenchmark::Run::minimumPresentationFraction},
             {"decodeObserved", run.windows > 0},
             {"decodeMs", run.decoded > 0 ? run.decodeMs / run.decoded : -1},
             {"renderMs", run.presented > 0 ? run.renderMs / run.presented : -1},

@@ -224,6 +224,13 @@ Item {
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
+                            visible: modelData.lowestPresented >= 0 && modelData.lowestPresented < modelData.presentationFloor
+                            text: qsTr("Lowest presentation sample %1 fps · %2 fps required")
+                                  .arg(modelData.lowestPresented.toFixed(1)).arg(modelData.presentationFloor.toFixed(1))
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
                             text: modelData.exercised ?
                                       qsTr("%1 fps from fresh desktop captures · %2 of %3 s with motion")
                                           .arg(modelData.freshCaptureFps.toFixed(1))
