@@ -1077,9 +1077,9 @@ void RemoteBroker::advanceStreamBenchmark()
         return;
     }
     m_Benchmark.current = {};
+    m_Benchmark.failure.clear();
     m_Benchmark.warmup = 2;
     m_Benchmark.complete = false;
-    m_Benchmark.interrupted = false;
     connectToHostImpl(m_Benchmark.hostId, m_Benchmark.pending.takeFirst());
 }
 
@@ -1109,6 +1109,7 @@ void RemoteBroker::finishStreamBenchmark(const QString& reason)
             {"decodeMs", run.decoded > 0 ? run.decodeMs / run.decoded : -1},
             {"renderMs", run.presented > 0 ? run.renderMs / run.presented : -1},
             {"mbps", run.videoMbps()}, {"freshCaptureFps", run.freshCaptureFps()},
+            {"seconds", run.seconds}, {"motionSeconds", run.motionSeconds},
             {"exercised", run.exercisedWorkload()},
             {"missing", run.missing},
             {"rtt", run.rttSamples > 0 ? run.totalRttMs / run.rttSamples : -1},
@@ -1139,13 +1140,18 @@ void RemoteBroker::finishStreamBenchmark(const QString& reason)
 void RemoteBroker::attachStreamBenchmark(Session* session, const QString& comparisonKey)
 {
     session->enableStreamBenchmark();
+    const auto recordFailure = [this](const QString& message) {
+        if (streamBenchmarkRunning() && m_Benchmark.failure.isEmpty()) {
+            m_Benchmark.failure = message;
+        }
+    };
     connect(session, &Session::diagnosticStreamParameters, this, [this, comparisonKey](QJsonObject mode) {
         const auto separator = comparisonKey.lastIndexOf(QLatin1Char('/'));
         mode.insert("route", comparisonKey.mid(separator + 1));
         m_Benchmark.current.mode = std::move(mode);
     });
     connect(session, &Session::streamBenchmarkSample, this, [this, session](const QJsonObject& sample) {
-        if (!streamBenchmarkRunning() || m_Benchmark.interrupted || m_Benchmark.complete ||
+        if (!streamBenchmarkRunning() || !m_Benchmark.failure.isEmpty() || m_Benchmark.complete ||
                 m_Benchmark.current.mode.isEmpty()) return;
         if (m_Benchmark.warmup > 0) {
             --m_Benchmark.warmup;
@@ -1157,15 +1163,19 @@ void RemoteBroker::attachStreamBenchmark(Session* session, const QString& compar
             session->endStreamBenchmark();
         }
     });
-    connect(session, &Session::diagnosticConnectionLost, this, [this, session](int) {
+    connect(session, &Session::displayLaunchError, this, recordFailure);
+    connect(session, &Session::stageFailed, this, [this, recordFailure](const QString& stage, int code, const QString&) {
+        recordFailure(tr("Starting %1 failed with error %2.").arg(stage).arg(code));
+    });
+    connect(session, &Session::diagnosticConnectionLost, this, [this, session, recordFailure](int) {
         if (!streamBenchmarkRunning()) return;
-        m_Benchmark.interrupted = true;
-        m_Benchmark.complete = false;
+        recordFailure(tr("The preview lost its connection to the workstation."));
         session->endStreamBenchmark();
     });
-    connect(session, &Session::connectionStarted, this, [this, owner = QPointer<Session>(session)]() {
-        QTimer::singleShot(25000, this, [this, owner]() {
+    connect(session, &Session::connectionStarted, this, [this, owner = QPointer<Session>(session), recordFailure]() {
+        QTimer::singleShot(25000, this, [this, owner, recordFailure]() {
             if (owner && m_KeepaliveOwner == owner && streamBenchmarkRunning() && !m_Benchmark.complete) {
+                recordFailure(tr("The preview timed out before Fernweh could measure it."));
                 owner->endStreamBenchmark();
             }
         });
@@ -1173,8 +1183,10 @@ void RemoteBroker::attachStreamBenchmark(Session* session, const QString& compar
     connect(session, &Session::readyForDeletion, this, [this, comparisonKey]() {
         if (!streamBenchmarkRunning()) return;
         if (!m_Benchmark.current.mode.isEmpty()) m_Benchmark.runs.append(m_Benchmark.current);
-        if (!m_Benchmark.complete) {
-            finishStreamBenchmark(tr("The preview ended before enough moving video was measured."));
+        if (!m_Benchmark.failure.isEmpty() || !m_Benchmark.complete) {
+            const QString message = m_Benchmark.failure.isEmpty() ?
+                        tr("The preview was closed before the test finished.") : m_Benchmark.failure;
+            finishStreamBenchmark(message);
             return;
         }
         m_Benchmark.comparisonKey = comparisonKey;

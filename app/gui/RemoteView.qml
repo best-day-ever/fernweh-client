@@ -225,8 +225,11 @@ Item {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             text: modelData.exercised ?
-                                      qsTr("%1 fps from fresh desktop captures").arg(modelData.freshCaptureFps.toFixed(1)) :
-                                      qsTr("Too little motion or video traffic for a recommendation")
+                                      qsTr("%1 fps from fresh desktop captures · %2 of %3 s with motion")
+                                          .arg(modelData.freshCaptureFps.toFixed(1))
+                                          .arg(modelData.motionSeconds.toFixed(1)).arg(modelData.seconds.toFixed(1)) :
+                                      qsTr("Too little sustained motion or traffic · %1 of %2 s with motion")
+                                          .arg(modelData.motionSeconds.toFixed(1)).arg(modelData.seconds.toFixed(1))
                         }
                         Label {
                             Layout.fillWidth: true

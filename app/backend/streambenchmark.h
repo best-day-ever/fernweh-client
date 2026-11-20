@@ -9,8 +9,13 @@ namespace StreamBenchmark {
 
 struct Run
 {
+    static constexpr double minimumCaptureFraction = 0.75;
+    static constexpr double minimumBitrateFraction = 0.05;
+    static constexpr double minimumMotionFraction = 0.80;
+
     QJsonObject mode;
     double seconds = 0;
+    double motionSeconds = 0;
     double decodeMs = 0;
     double renderMs = 0;
     double receivedBytes = 0;
@@ -34,14 +39,23 @@ struct Run
         if (interval <= 0) return;
         const int frames = sample.value("presented").toInt();
         const double fps = frames / interval;
+        const int captures = sample.value("freshCaptures").toInt();
+        const double bytes = sample.value("bytes").toDouble();
+        const int targetFps = mode.value("fps").toInt();
+        const int targetKbps = mode.value("bitrate_kbps").toInt();
+        if (targetFps > 0 && targetKbps > 0 &&
+                captures >= interval * targetFps * minimumCaptureFraction &&
+                bytes * 8 >= interval * targetKbps * 1000 * minimumBitrateFraction) {
+            motionSeconds += interval;
+        }
         worstPresentedFps = windows == 0 ? fps : std::min(worstPresentedFps, fps);
         ++windows;
         seconds += interval;
         decodeMs += sample.value("decodeMs").toDouble();
         renderMs += sample.value("renderMs").toDouble();
-        receivedBytes += sample.value("bytes").toDouble();
+        receivedBytes += bytes;
         received += sample.value("received").toInt();
-        freshCaptures += sample.value("freshCaptures").toInt();
+        freshCaptures += captures;
         decoded += sample.value("decoded").toInt();
         presented += frames;
         missing += sample.value("missing").toInt();
@@ -68,11 +82,11 @@ struct Run
     {
         const int fps = mode.value("fps").toInt();
         const int kbps = mode.value("bitrate_kbps").toInt();
-        // Static refresh can still present at 60 fps. Require fresh capture
-        // timestamps and enough encoded traffic to exercise the stream.
-        constexpr double minimumTargetFraction = 0.05;
-        return completed() && fps > 0 && kbps > 0 && freshCaptureFps() >= fps * 0.75 &&
-                videoMbps() >= (kbps / 1000.0) * minimumTargetFraction;
+        // One burst of traffic in a static preview can raise its averages.
+        return completed() && fps > 0 && kbps > 0 &&
+                freshCaptureFps() >= fps * minimumCaptureFraction &&
+                videoMbps() >= (kbps / 1000.0) * minimumBitrateFraction &&
+                motionSeconds >= seconds * minimumMotionFraction;
     }
     bool meetsTarget() const
     {

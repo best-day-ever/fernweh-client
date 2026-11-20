@@ -202,9 +202,9 @@ private:
         QVector<StreamBenchmark::Run> runs;
         StreamBenchmark::Run current;
         QString comparisonKey;
+        QString failure;
         int warmup = 0;
         bool complete = false;
-        bool interrupted = false;
     };
     Benchmark m_Benchmark;
     struct BenchmarkRecommendation {

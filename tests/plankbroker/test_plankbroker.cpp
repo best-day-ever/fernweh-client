@@ -4234,27 +4234,33 @@ void TestPlankBroker::remoteStreamSetupReportsUnusableChoice()
 
 void TestPlankBroker::streamBenchmarkRequiresSustainedHardwarePresentation()
 {
-    const auto measured = [](bool hardware, int frames) {
+    const auto measured = [](bool hardware, int frames, int motionWindows = 12, int freshCaptures = 59) {
         StreamBenchmark::Run run;
         run.mode = {{"width", 3840}, {"height", 2160}, {"fps", 60}, {"route", "relay"},
                     {"bitrate_kbps", 30000}};
         for (int i = 0; i < 12; ++i) {
             run.add({{"seconds", 1}, {"received", 60}, {"decoded", frames},
                      {"presented", frames}, {"hardware", hardware},
-                     {"freshCaptures", 59}, {"bytes", 1500000}});
+                     {"freshCaptures", freshCaptures}, {"bytes", i < motionWindows ? 1500000 : 20000}});
         }
         return run;
     };
     const auto software = measured(false, 60);
     const auto laggy = measured(true, 45);
     const auto good = measured(true, 59);
-    auto staticDesktop = good;
-    staticDesktop.freshCaptures = 0;
+    const auto staticDesktop = measured(true, 59, 12, 0);
     QVERIFY(!staticDesktop.meetsTarget());
-    auto lightDesktop = good;
-    lightDesktop.receivedBytes = 300000; // 0.2 Mbps over twelve seconds.
+    const auto lightDesktop = measured(true, 59, 0);
     QVERIFY(!lightDesktop.meetsTarget());
     QCOMPARE(StreamBenchmark::recommend({staticDesktop, lightDesktop}), -1);
+    const auto burst = measured(true, 59, 2);
+    QVERIFY(burst.videoMbps() > 1.5);
+    QCOMPARE(burst.motionSeconds, 2.0);
+    QCOMPARE(StreamBenchmark::recommend({burst}), -1);
+    const auto briefPause = measured(true, 59, 10);
+    QCOMPARE(briefPause.motionSeconds, 10.0);
+    QCOMPARE(StreamBenchmark::recommend({briefPause}), 0);
+    QCOMPARE(StreamBenchmark::recommend({measured(true, 59, 9)}), -1);
     auto stalled = good;
     stalled.add({{"seconds", 1}, {"received", 60}, {"presented", 20}, {"hardware", true}});
     QVERIFY(stalled.presentedFps() >= 56);
