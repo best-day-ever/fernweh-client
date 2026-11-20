@@ -15,6 +15,7 @@ struct Run
     double renderMs = 0;
     double receivedBytes = 0;
     qint64 received = 0;
+    qint64 freshCaptures = 0;
     qint64 decoded = 0;
     qint64 presented = 0;
     qint64 missing = 0;
@@ -40,6 +41,7 @@ struct Run
         renderMs += sample.value("renderMs").toDouble();
         receivedBytes += sample.value("bytes").toDouble();
         received += sample.value("received").toInt();
+        freshCaptures += sample.value("freshCaptures").toInt();
         decoded += sample.value("decoded").toInt();
         presented += frames;
         missing += sample.value("missing").toInt();
@@ -59,11 +61,23 @@ struct Run
     }
 
     double presentedFps() const { return seconds > 0 ? presented / seconds : 0; }
+    double freshCaptureFps() const { return seconds > 0 ? freshCaptures / seconds : 0; }
+    double videoMbps() const { return seconds > 0 ? receivedBytes * 8 / seconds / 1e6 : 0; }
     bool completed() const { return seconds >= 12.0 && windows >= 10; }
+    bool exercisedWorkload() const
+    {
+        const int fps = mode.value("fps").toInt();
+        const int kbps = mode.value("bitrate_kbps").toInt();
+        // Static refresh can still present at 60 fps. Require fresh capture
+        // timestamps and enough encoded traffic to exercise the stream.
+        constexpr double minimumTargetFraction = 0.05;
+        return completed() && fps > 0 && kbps > 0 && freshCaptureFps() >= fps * 0.75 &&
+                videoMbps() >= (kbps / 1000.0) * minimumTargetFraction;
+    }
     bool meetsTarget() const
     {
         const int fps = mode.value("fps").toInt();
-        return completed() && hardware && fps > 0 &&
+        return exercisedWorkload() && hardware &&
                 presentedFps() >= fps * 0.95 && worstPresentedFps >= fps * 0.80;
     }
 };

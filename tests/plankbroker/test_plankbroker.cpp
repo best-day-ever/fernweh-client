@@ -4236,16 +4236,25 @@ void TestPlankBroker::streamBenchmarkRequiresSustainedHardwarePresentation()
 {
     const auto measured = [](bool hardware, int frames) {
         StreamBenchmark::Run run;
-        run.mode = {{"width", 3840}, {"height", 2160}, {"fps", 60}, {"route", "relay"}};
+        run.mode = {{"width", 3840}, {"height", 2160}, {"fps", 60}, {"route", "relay"},
+                    {"bitrate_kbps", 30000}};
         for (int i = 0; i < 12; ++i) {
             run.add({{"seconds", 1}, {"received", 60}, {"decoded", frames},
-                     {"presented", frames}, {"hardware", hardware}});
+                     {"presented", frames}, {"hardware", hardware},
+                     {"freshCaptures", 59}, {"bytes", 1500000}});
         }
         return run;
     };
     const auto software = measured(false, 60);
     const auto laggy = measured(true, 45);
     const auto good = measured(true, 59);
+    auto staticDesktop = good;
+    staticDesktop.freshCaptures = 0;
+    QVERIFY(!staticDesktop.meetsTarget());
+    auto lightDesktop = good;
+    lightDesktop.receivedBytes = 300000; // 0.2 Mbps over twelve seconds.
+    QVERIFY(!lightDesktop.meetsTarget());
+    QCOMPARE(StreamBenchmark::recommend({staticDesktop, lightDesktop}), -1);
     auto stalled = good;
     stalled.add({{"seconds", 1}, {"received", 60}, {"presented", 20}, {"hardware", true}});
     QVERIFY(stalled.presentedFps() >= 56);

@@ -224,6 +224,13 @@ Item {
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
+                            text: modelData.exercised ?
+                                      qsTr("%1 fps from fresh desktop captures").arg(modelData.freshCaptureFps.toFixed(1)) :
+                                      qsTr("Too little motion or video traffic for a recommendation")
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
                             text: qsTr("Mean decode %1 · render %2 · RTT %3")
                                   .arg(modelData.decodeMs < 0 ? qsTr("unavailable") : qsTr("%1 ms").arg(modelData.decodeMs.toFixed(1)))
                                   .arg(modelData.renderMs < 0 ? qsTr("unavailable") : qsTr("%1 ms").arg(modelData.renderMs.toFixed(1)))

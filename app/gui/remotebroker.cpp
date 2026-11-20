@@ -1093,8 +1093,10 @@ void RemoteBroker::finishStreamBenchmark(const QString& reason)
         m_BenchmarkRecommendations.remove(m_Benchmark.comparisonKey);
     }
     QVariantList rows;
+    bool exercised = false;
     for (int i = 0; i < m_Benchmark.runs.size(); ++i) {
         const auto& run = m_Benchmark.runs[i];
+        exercised = exercised || run.exercisedWorkload();
         rows.append(QVariantMap{
             {"profile", RemoteStreamSetup::profileName(run.mode.value("profile").toInt(-1))},
             {"width", run.mode.value("width").toInt()}, {"height", run.mode.value("height").toInt()},
@@ -1106,7 +1108,8 @@ void RemoteBroker::finishStreamBenchmark(const QString& reason)
             {"decodeObserved", run.windows > 0},
             {"decodeMs", run.decoded > 0 ? run.decodeMs / run.decoded : -1},
             {"renderMs", run.presented > 0 ? run.renderMs / run.presented : -1},
-            {"mbps", run.seconds > 0 ? run.receivedBytes * 8 / run.seconds / 1e6 : 0},
+            {"mbps", run.videoMbps()}, {"freshCaptureFps", run.freshCaptureFps()},
+            {"exercised", run.exercisedWorkload()},
             {"missing", run.missing},
             {"rtt", run.rttSamples > 0 ? run.totalRttMs / run.rttSamples : -1},
             {"fecBefore", run.lossSamples > 0 ? run.fecBefore / run.lossSamples : -1},
@@ -1122,8 +1125,13 @@ void RemoteBroker::finishStreamBenchmark(const QString& reason)
     emit stateChanged();
     QString result = reason;
     if (result.isEmpty()) {
-        result = choice >= 0 ? tr("Automatic will prefer the recommended profile for this display setup and route.") :
-                               tr("No hardware profile sustained the target. Try a lower display mode or repeat with continuous motion.");
+        if (choice >= 0) {
+            result = tr("Automatic will prefer the recommended profile for this display setup and route.");
+        } else if (exercised) {
+            result = tr("No hardware profile sustained the target with moving video. Try a lower display mode.");
+        } else {
+            result = tr("The previews carried too little moving video for a recommendation. Play a moving video or animation on the workstation and repeat the test.");
+        }
     }
     emit streamBenchmarkFinished(rows, result);
 }

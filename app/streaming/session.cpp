@@ -1207,6 +1207,7 @@ void Session::publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecode
         const auto fec = currentVideoFecLoss();
         emit streamBenchmarkSample(QJsonObject{
             {"seconds", seconds}, {"received", qint64(window.receivedFrames)},
+            {"freshCaptures", qint64(window.framesWithHostProcessingLatency)},
             {"decoded", qint64(window.decodedFrames)}, {"presented", qint64(window.renderedFrames)},
             {"missing", qint64(window.networkDroppedFrames)}, {"bytes", qint64(window.receivedVideoBytes)},
             {"decodeMs", double(window.totalDecodeTime)}, {"renderMs", double(window.totalRenderTime)},
