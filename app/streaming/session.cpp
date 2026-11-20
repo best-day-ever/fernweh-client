@@ -563,7 +563,18 @@ bool Session::selectAutomaticVideoProfile(SDL_Window* testWindow)
     const int width = m_StreamConfig.width;
     const int height = m_StreamConfig.height;
     const auto original = m_PlankVideoProfile;
-    for (const int profile : RemoteStreamSetup::automaticNvencProfiles(caps)) {
+    auto profiles = RemoteStreamSetup::automaticNvencProfiles(caps);
+    const auto& recommended = m_Computer->plankBenchmarkRecommendation;
+    const int preferred = recommended.value("profile").toInt(-1);
+    if (profiles.contains(preferred) &&
+            recommended.value("width").toInt() == width &&
+            recommended.value("height").toInt() == height &&
+            recommended.value("fps").toInt() == m_StreamConfig.fps &&
+            recommended.value("bitrate_kbps").toInt() ==
+                StreamingPreferences::plankBitrateForProfile(m_Computer->plankProfileBitratesKbps, preferred)) {
+        profiles.move(profiles.indexOf(preferred), 0);
+    }
+    for (const int profile : profiles) {
         const auto* encoding = plank_encoding_profile(profile);
         const int format = encoding->video_format;
         const bool identity = isIdentityGbrEnabledForFormat(format);
@@ -1212,17 +1223,35 @@ void Session::publishPenMetrics(const PlankPenActivity& activity)
 #endif
 }
 
-void Session::publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder)
+void Session::endStreamBenchmark()
 {
+    if (m_MeasureStreamBenchmark && s_ActiveSession == this) {
+        requestSessionQuit(SessionDiagnostics::End::QuitEvent);
+    }
+}
+
+void Session::publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder, quint32 elapsedMs)
+{
+    if (!elapsedMs) return;
+    const double seconds = elapsedMs / 1000.0;
+    if (m_MeasureStreamBenchmark) {
+        const auto fec = currentVideoFecLoss();
+        emit streamBenchmarkSample(QJsonObject{
+            {"seconds", seconds}, {"received", qint64(window.receivedFrames)},
+            {"decoded", qint64(window.decodedFrames)}, {"presented", qint64(window.renderedFrames)},
+            {"missing", qint64(window.networkDroppedFrames)}, {"bytes", qint64(window.receivedVideoBytes)},
+            {"decodeMs", double(window.totalDecodeTime)}, {"renderMs", double(window.totalRenderTime)},
+            {"rtt", qint64(currentNetworkRttMs())}, {"hardware", hardwareDecoder},
+            {"fecBefore", double(fec.before)}, {"fecAfter", double(fec.after)}
+        });
+    }
 #ifdef PLANK_TRANSPORT
     std::unique_lock<std::mutex> lock(m_MetricsMutex, std::try_to_lock);
     if (!lock || !m_MetricsHandle) return;
-    const auto elapsed = PlankClock::milliseconds() - window.measurementStartTimestamp;
-    if (!elapsed) return;
     PlankMetricsClientVideo sample {};
     sample.struct_size = sizeof(sample);
     sample.hardware_decoder = hardwareDecoder ? 1 : 0;
-    sample.window_seconds = double(elapsed) / 1000.0;
+    sample.window_seconds = seconds;
     sample.received_frames = window.receivedFrames;
     sample.decoded_frames = window.decodedFrames;
     sample.rendered_frames = window.renderedFrames;
@@ -1236,9 +1265,6 @@ void Session::publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecode
     sample.host_latency_time_ms = double(window.totalHostProcessingLatency) / 10.0;
     // A busy or retired metrics sink only loses this observation, never video.
     plank_metrics_client_video(m_MetricsHandle, &sample);
-#else
-    Q_UNUSED(window)
-    Q_UNUSED(hardwareDecoder)
 #endif
 }
 

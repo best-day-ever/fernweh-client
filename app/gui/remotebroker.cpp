@@ -186,6 +186,8 @@ void RemoteBroker::signOutLocally(const QString& message)
     m_TouchIdSetupPending = false;
     m_TouchIdSetupBusy = false;
     m_TouchIdSetupError.clear();
+    m_Benchmark = {};
+    m_BenchmarkRecommendations.clear();
     stopKeepalive();
     m_Token->clear();
     BrokerSessionStore::clear(brokerAddress());
@@ -673,6 +675,9 @@ struct StreamInputs {
     bool seeded = false;
     RemoteStreamSetup::Setup seed;
     RemoteStreamSetup::Setup defaults;
+    int benchmarkProfile = -1;
+    QJsonObject directRecommendation;
+    QJsonObject relayRecommendation;
 };
 
 // The stream settings do not fit the workstation: ask instead of launching.
@@ -718,7 +723,15 @@ NvComputer* prepareBrokeredComputer(const PlankBroker::Lease& lease, const QStri
 
     RemoteStreamSetup::Resolution resolution = RemoteStreamSetup::resolve(
                 stream.host, stream.seeded ? &stream.seed : nullptr, stream.defaults, capabilities.platform);
-    const bool automatic = !macHost && resolution.source == RemoteStreamSetup::FromBuiltIn;
+    const bool benchmark = stream.benchmarkProfile >= 0;
+    if (benchmark) {
+        resolution.setup = RemoteStreamSetup::builtInDefaults(capabilities.platform);
+        resolution.setup.videoProfile = stream.benchmarkProfile;
+        if (!RemoteStreamSetup::automaticNvencProfiles(capabilities).contains(stream.benchmarkProfile)) {
+            throw StreamSettingsRequired { RemoteBroker::tr("The workstation stopped advertising this benchmark profile.") };
+        }
+    }
+    const bool automatic = !benchmark && !macHost && resolution.source == RemoteStreamSetup::FromBuiltIn;
     if (automatic) {
         const auto profiles = RemoteStreamSetup::automaticNvencProfiles(capabilities);
         if (!profiles.isEmpty()) {
@@ -744,6 +757,10 @@ NvComputer* prepareBrokeredComputer(const PlankBroker::Lease& lease, const QStri
     {
         QWriteLocker lock(&computer->lock);
         computer->plankAutomaticVideoProfile = automatic;
+        if (automatic) {
+            computer->plankBenchmarkRecommendation = lease.route == PlankBroker::Route::Direct ?
+                        stream.directRecommendation : stream.relayRecommendation;
+        }
         // Connecting always has a display setup chosen for this workstation.
         if (display.configured) {
             computer->plankScalingMode = display.scalingMode;
@@ -1029,6 +1046,131 @@ void RemoteBroker::resetRemoteStreamDefaults()
 
 void RemoteBroker::connectToHost(const QString& hostId)
 {
+    if (!streamBenchmarkRunning()) connectToHostImpl(hostId, -1);
+}
+
+void RemoteBroker::startStreamBenchmark(const QString& hostId)
+{
+    if (!signedIn() || busy() || m_KeepaliveOwner || streamBenchmarkRunning() ||
+            !PlankBroker::isHostId(hostId)) return;
+    QSettings settings;
+    m_Benchmark.pending = RemoteStreamSetup::automaticNvencProfiles(RemoteStreamSetup::loadCapabilities(settings, hostId));
+    if (m_Benchmark.pending.isEmpty()) {
+        emit streamBenchmarkFinished({}, tr("Connect to this Linux workstation once to check its supported hardware encoders."));
+        return;
+    }
+    m_Benchmark.hostId = hostId;
+    emit stateChanged();
+    advanceStreamBenchmark();
+}
+
+void RemoteBroker::advanceStreamBenchmark()
+{
+    if (!streamBenchmarkRunning()) return;
+    if (m_Benchmark.pending.isEmpty()) {
+        finishStreamBenchmark();
+        return;
+    }
+    if (busy() || m_KeepaliveOwner) {
+        finishStreamBenchmark(tr("The previous stream was still closing."));
+        return;
+    }
+    m_Benchmark.current = {};
+    m_Benchmark.warmup = 2;
+    m_Benchmark.complete = false;
+    m_Benchmark.interrupted = false;
+    connectToHostImpl(m_Benchmark.hostId, m_Benchmark.pending.takeFirst());
+}
+
+void RemoteBroker::finishStreamBenchmark(const QString& reason)
+{
+    const int choice = reason.isEmpty() ? StreamBenchmark::recommend(m_Benchmark.runs) : -1;
+    if (choice >= 0) {
+        m_BenchmarkRecommendations.insert(m_Benchmark.comparisonKey,
+                                          { m_Benchmark.runs[choice].mode, nowMs() + 30 * 60 * 1000 });
+    } else if (reason.isEmpty()) {
+        m_BenchmarkRecommendations.remove(m_Benchmark.comparisonKey);
+    }
+    QVariantList rows;
+    for (int i = 0; i < m_Benchmark.runs.size(); ++i) {
+        const auto& run = m_Benchmark.runs[i];
+        rows.append(QVariantMap{
+            {"profile", RemoteStreamSetup::profileName(run.mode.value("profile").toInt(-1))},
+            {"width", run.mode.value("width").toInt()}, {"height", run.mode.value("height").toInt()},
+            {"target", run.mode.value("fps").toInt()}, {"kbps", run.mode.value("bitrate_kbps").toInt()},
+            {"route", run.mode.value("route").toString() == QStringLiteral("direct") ? tr("Direct") : tr("Fernweh relay")},
+            {"received", run.seconds > 0 ? run.received / run.seconds : 0},
+            {"decoded", run.seconds > 0 ? run.decoded / run.seconds : 0},
+            {"presented", run.presentedFps()}, {"hardware", run.hardware && run.windows > 0},
+            {"decodeObserved", run.windows > 0},
+            {"decodeMs", run.decoded > 0 ? run.decodeMs / run.decoded : -1},
+            {"renderMs", run.presented > 0 ? run.renderMs / run.presented : -1},
+            {"mbps", run.seconds > 0 ? run.receivedBytes * 8 / run.seconds / 1e6 : 0},
+            {"missing", run.missing},
+            {"rtt", run.rttSamples > 0 ? run.totalRttMs / run.rttSamples : -1},
+            {"fecBefore", run.lossSamples > 0 ? run.fecBefore / run.lossSamples : -1},
+            {"fecAfter", run.lossSamples > 0 ? run.fecAfter / run.lossSamples : -1},
+            {"recommended", i == choice}
+        });
+    }
+    m_Benchmark = {};
+    emit stateChanged();
+    QString result = reason;
+    if (result.isEmpty()) {
+        result = choice >= 0 ? tr("Automatic will prefer the recommended profile for this display setup and route.") :
+                               tr("No hardware profile sustained the target. Try a lower display mode or repeat with continuous motion.");
+    }
+    emit streamBenchmarkFinished(rows, result);
+}
+
+void RemoteBroker::attachStreamBenchmark(Session* session, const QString& comparisonKey)
+{
+    session->enableStreamBenchmark();
+    connect(session, &Session::diagnosticStreamParameters, this, [this, comparisonKey](QJsonObject mode) {
+        const auto separator = comparisonKey.lastIndexOf(QLatin1Char('/'));
+        mode.insert("route", comparisonKey.mid(separator + 1));
+        m_Benchmark.current.mode = std::move(mode);
+    });
+    connect(session, &Session::streamBenchmarkSample, this, [this, session](const QJsonObject& sample) {
+        if (!streamBenchmarkRunning() || m_Benchmark.interrupted || m_Benchmark.complete ||
+                m_Benchmark.current.mode.isEmpty()) return;
+        if (m_Benchmark.warmup > 0) {
+            --m_Benchmark.warmup;
+            return;
+        }
+        m_Benchmark.current.add(sample);
+        if (m_Benchmark.current.completed()) {
+            m_Benchmark.complete = true;
+            session->endStreamBenchmark();
+        }
+    });
+    connect(session, &Session::diagnosticConnectionLost, this, [this, session](int) {
+        if (!streamBenchmarkRunning()) return;
+        m_Benchmark.interrupted = true;
+        m_Benchmark.complete = false;
+        session->endStreamBenchmark();
+    });
+    connect(session, &Session::connectionStarted, this, [this, owner = QPointer<Session>(session)]() {
+        QTimer::singleShot(25000, this, [this, owner]() {
+            if (owner && m_KeepaliveOwner == owner && streamBenchmarkRunning() && !m_Benchmark.complete) {
+                owner->endStreamBenchmark();
+            }
+        });
+    });
+    connect(session, &Session::readyForDeletion, this, [this, comparisonKey]() {
+        if (!streamBenchmarkRunning()) return;
+        if (!m_Benchmark.current.mode.isEmpty()) m_Benchmark.runs.append(m_Benchmark.current);
+        if (!m_Benchmark.complete) {
+            finishStreamBenchmark(tr("The preview ended before enough moving video was measured."));
+            return;
+        }
+        m_Benchmark.comparisonKey = comparisonKey;
+        QTimer::singleShot(250, this, &RemoteBroker::advanceStreamBenchmark);
+    }, Qt::QueuedConnection);
+}
+
+void RemoteBroker::connectToHostImpl(const QString& hostId, int benchmarkProfile)
+{
     Q_ASSERT(QThread::currentThread() == qApp->thread());
     if (!signedIn() || busy() || !PlankBroker::isHostId(hostId)) return;
     const QString hostName = hostNameFor(hostId);
@@ -1045,11 +1187,13 @@ void RemoteBroker::connectToHost(const QString& hostId)
     const RemoteStreamSetup::Capabilities cached = RemoteStreamSetup::loadCapabilities(settings, hostId);
     const bool macHost = cached.known && cached.platform == RemoteStreamSetup::MacPlatform;
     const DisplayProfile::Resolved profile = DisplayProfile::resolveForHost(settings, hostId, fingerprint);
+    const bool benchmark = benchmarkProfile >= 0;
     RemoteDisplaySetup::Setup display;
     if (macHost || profile.source == DisplayProfile::Resolved::Legacy) {
         // Older workstations and Mac Hosts use their per-workstation choice.
         display = RemoteDisplaySetup::load(settings, hostId);
         if (!display.configured) {
+            if (benchmark) finishStreamBenchmark(tr("Save a display setup before running the test."));
             emit displaySetupRequired(hostId, hostName, QString());
             return;
         }
@@ -1059,12 +1203,14 @@ void RemoteBroker::connectToHost(const QString& hostId)
                     !RemoteDisplaySetup::prepareMac(display, macDisplays, &matchReason).mode.isEmpty() :
                     RemoteDisplaySetup::refreshMatchedModes(settings, hostId, display, displays, &matchReason, modes);
         if (!matchValid) {
+            if (benchmark) finishStreamBenchmark(matchReason);
             // Screens changed since the setup was saved (e.g. a third monitor).
             emit displaySetupRequired(hostId, hostName, matchReason);
             return;
         }
         const QString unsupported = matchingMac ? QString() : RemoteDisplaySetup::unsupportedModeReason(display, modes);
         if (!unsupported.isEmpty()) {
+            if (benchmark) finishStreamBenchmark(unsupported);
             // A saved virtual mode this workstation refused on its last connect.
             emit displaySetupRequired(hostId, hostName, unsupported);
             return;
@@ -1072,7 +1218,8 @@ void RemoteBroker::connectToHost(const QString& hostId)
     } else {
         if (profile.source == DisplayProfile::Resolved::None) {
             // Screens this computer has no display setup for yet.
-            if (!DisplayProfile::autoAccept(settings)) {
+            if (benchmark || !DisplayProfile::autoAccept(settings)) {
+                if (benchmark) finishStreamBenchmark(tr("Save a display setup before running the test."));
                 emit displaySetupRequired(hostId, hostName, QStringLiteral("new-screens"));
                 return;
             }
@@ -1092,6 +1239,15 @@ void RemoteBroker::connectToHost(const QString& hostId)
     stream.defaults = RemoteStreamSetup::loadDefaults(settings);
     stream.seeded = stream.host.mode == RemoteStreamSetup::Unset &&
             bookmarkSeedFor(hostId, hostName, stream.seed);
+    stream.benchmarkProfile = benchmarkProfile;
+    const QString layoutKey = hostId + QLatin1Char('/') + fingerprint + QLatin1Char('/') +
+        DisplayProfile::encode(profile.profile) + QLatin1Char('/') + display.hostLayout +
+            QLatin1Char('/') + display.virtualMode1 + QLatin1Char('/') + display.virtualMode2 +
+            QLatin1Char('/') + display.scalingMode + QLatin1Char('/') + QString::number(m_Preferences->windowMode);
+    const auto direct = m_BenchmarkRecommendations.value(layoutKey + QStringLiteral("/direct"));
+    const auto relay = m_BenchmarkRecommendations.value(layoutKey + QStringLiteral("/relay"));
+    if (direct.expires > nowMs()) stream.directRecommendation = direct.mode;
+    if (relay.expires > nowMs()) stream.relayRecommendation = relay.mode;
     // Capabilities cached by an earlier connect are advisory only (the
     // settings dialog flags choices with them): the workstation may have been
     // upgraded or its encoder probe may have recovered since, and refusing
@@ -1107,7 +1263,7 @@ void RemoteBroker::connectToHost(const QString& hostId)
     const quint64 grant = token->beginLease(authentication);
     QPointer<RemoteBroker> self(this);
     QThreadPool::globalInstance()->start([self, config, token, generation, authentication, grant,
-                                         hostId, hostName, stream, display, macDisplays]() {
+                                         hostId, hostName, stream, display, macDisplays, benchmark, layoutKey]() {
         NvComputer* computer = nullptr;
         std::shared_ptr<PlankBrokerError> brokerFailure;
         QString hostFailure;
@@ -1115,6 +1271,7 @@ void RemoteBroker::connectToHost(const QString& hostId)
         QString displayProblem;
         RemoteStreamSetup::Capabilities capabilities;
         bool authenticatedGreeter = false;
+        QString comparisonKey;
         try {
             const QString sessionToken = token->getForRevision(authentication);
             if (!token->currentLease(authentication, grant)) return;
@@ -1123,6 +1280,8 @@ void RemoteBroker::connectToHost(const QString& hostId)
             const qint64 grantedAtMs = nowMs();
             auto connection = PlankBrokerClient(config).connectAndRenew(sessionToken, hostId);
             PlankBroker::Lease& lease = connection.lease;
+            comparisonKey = layoutKey + (lease.route == PlankBroker::Route::Direct ?
+                                            QStringLiteral("/direct") : QStringLiteral("/relay"));
             QMetaObject::invokeMethod(qApp, [self, generation, authentication, grant, hostId,
                                              sessionToken, grantedAtMs, expiresIn = connection.expiresIn,
                                              renewalFailure = connection.renewalFailure]() {
@@ -1158,7 +1317,7 @@ void RemoteBroker::connectToHost(const QString& hostId)
                         tr("The workstation could not be reached through the remote access server.");
         }
         QMetaObject::invokeMethod(qApp, [self, generation, authentication, grant, hostId, hostName, computer,
-                                         authenticatedGreeter,
+                                         authenticatedGreeter, benchmark, comparisonKey,
                                          brokerFailure, hostFailure, streamProblem, displayProblem, capabilities]() {
             if (capabilities.known) {
                 // Kept for the settings dialog and the next connect's check.
@@ -1168,6 +1327,21 @@ void RemoteBroker::connectToHost(const QString& hostId)
             if (!self || generation != self->m_Generation || !self->m_Token->currentLease(authentication, grant)) {
                 // Signed out meanwhile; the one-use host token is abandoned.
                 delete computer;
+                return;
+            }
+            if (benchmark && (brokerFailure || !computer || authenticatedGreeter ||
+                              (!self->m_Benchmark.comparisonKey.isEmpty() &&
+                               self->m_Benchmark.comparisonKey != comparisonKey))) {
+                delete computer;
+                self->stopKeepalive();
+                self->setBusy(QString());
+                const QString error = brokerFailure ? brokerFailure->userMessage() :
+                    !streamProblem.isEmpty() ? streamProblem :
+                    !displayProblem.isEmpty() ? displayProblem :
+                    !hostFailure.isEmpty() ? hostFailure :
+                    authenticatedGreeter ? tr("Sign in to the workstation desktop before running the test.") :
+                    tr("The display setup or connection route changed during the test.");
+                self->finishStreamBenchmark(error);
                 return;
             }
             if (brokerFailure) {
@@ -1211,7 +1385,9 @@ void RemoteBroker::connectToHost(const QString& hostId)
             if (session == nullptr) {
                 self->stopKeepalive();
                 self->setBusy(QString());
-                emit self->errorOccurred(tr("The workstation did not provide its Desktop session."));
+                const auto error = tr("The workstation did not provide its Desktop session.");
+                if (benchmark) self->finishStreamBenchmark(error);
+                else emit self->errorOccurred(error);
                 return;
             }
 
@@ -1232,7 +1408,7 @@ void RemoteBroker::connectToHost(const QString& hostId)
             };
             context->hostId = hostId;
             context->computer = computer;
-            session->setPlankBrokerAdmission([context](PlankBroker::Admission& admission) {
+            session->setPlankBrokerAdmission([context, benchmark, comparisonKey](PlankBroker::Admission& admission) {
                 try {
                     const quint64 grant = context->beginLease();
                     const QString sessionToken = context->currentToken();
@@ -1240,6 +1416,10 @@ void RemoteBroker::connectToHost(const QString& hostId)
                     const qint64 grantedAtMs = nowMs();
                     auto connection = PlankBrokerClient(context->config).connectAndRenew(sessionToken, context->hostId);
                     PlankBroker::Lease& lease = connection.lease;
+                    if (benchmark && comparisonKey.endsWith(QStringLiteral("/direct")) !=
+                            (lease.route == PlankBroker::Route::Direct)) {
+                        throw GfeHttpResponseException(409, "Connection route changed during the stream benchmark");
+                    }
                     context->renewLease(grant, grantedAtMs, connection.expiresIn, sessionToken);
                     {
                         QWriteLocker lock(&context->computer->lock);
@@ -1258,6 +1438,7 @@ void RemoteBroker::connectToHost(const QString& hostId)
 
             self->m_PendingSession = session;
             self->attachKeepaliveSession(session);
+            if (benchmark) self->attachStreamBenchmark(session, comparisonKey);
             self->setBusy(QString());
             emit self->connectReady(hostName);
         }, Qt::QueuedConnection);
@@ -1328,6 +1509,7 @@ void RemoteBroker::attachKeepaliveSession(Session* session)
             m_DiagnosticSampleTimer.stop();
             m_Diagnostics->finish();
             stopKeepalive();
+            if (streamBenchmarkRunning()) return;
             refreshHosts();
             QTimer::singleShot(6000, this, [this]() {
                 if (m_KeepaliveSession.isNull()) refreshHostsImpl(false);

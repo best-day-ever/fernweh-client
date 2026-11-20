@@ -10,6 +10,7 @@ Rectangle {
     readonly property var people: host.connectedUsers || []
     signal settingsRequested()
     signal connectRequested()
+    signal benchmarkRequested()
     implicitHeight: Math.max(68, content.implicitHeight + 24)
     height: implicitHeight
     radius: theme.radiusMedium
@@ -61,6 +62,12 @@ Rectangle {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
             }
+        }
+        Button {
+            text: qsTr("Test connection…")
+            flat: true
+            enabled: card.host.connectable && !card.busy
+            onClicked: card.benchmarkRequested()
         }
         Button {
             text: qsTr("Settings…")

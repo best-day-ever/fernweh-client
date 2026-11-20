@@ -2059,6 +2059,8 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
         PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
                                   PlankVideoPipeline::Stage::CollectStatistics);
         m_FrontendRenderer->collectPresentationStats(m_ActiveWndVideoStats);
+        Session::get()->publishVideoMetrics(m_ActiveWndVideoStats, isHardwareAccelerated(),
+                                            SDL_GetTicks() - m_ActiveWndVideoStats.measurementStartTimestamp);
         PlankVideoPipeline::record(PlankVideoPipeline::decodeOperation,
                                   PlankVideoPipeline::Stage::PreparePacket);
         VIDEO_STATS lastTwoWndStats = {};

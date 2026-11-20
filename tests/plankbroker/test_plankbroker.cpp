@@ -14,6 +14,7 @@
 #include "displayprofile.h"
 #include "clientdisplayprobe.h"
 #include "remotestreamsetup.h"
+#include "streambenchmark.h"
 #include "brokersessionstore.h"
 #include "brokersessionstate.h"
 #include <QTemporaryDir>
@@ -439,6 +440,7 @@ private slots:
     void remoteStreamSetupSeedsOnlyFromExactBookmark();
     void remoteStreamSetupReportsUnusableChoice();
     void remoteStreamSetupRanksAdvertisedNvencProfiles();
+    void streamBenchmarkRequiresSustainedHardwarePresentation();
     void remoteStreamSetupCachesCapabilities();
     void remoteStreamSetupCachesDisplayCapabilities();
 };
@@ -4228,6 +4230,34 @@ void TestPlankBroker::remoteStreamSetupReportsUnusableChoice()
     QCOMPARE(r.source, RemoteStreamSetup::FromHost);
     QCOMPARE(r.setup.videoProfile, hevc10);
     QVERIFY(!RemoteStreamSetup::problemFor(r.setup, noHevc10Fbc).isEmpty());
+}
+
+void TestPlankBroker::streamBenchmarkRequiresSustainedHardwarePresentation()
+{
+    const auto measured = [](bool hardware, int frames) {
+        StreamBenchmark::Run run;
+        run.mode = {{"width", 3840}, {"height", 2160}, {"fps", 60}, {"route", "relay"}};
+        for (int i = 0; i < 12; ++i) {
+            run.add({{"seconds", 1}, {"received", 60}, {"decoded", frames},
+                     {"presented", frames}, {"hardware", hardware}});
+        }
+        return run;
+    };
+    const auto software = measured(false, 60);
+    const auto laggy = measured(true, 45);
+    const auto good = measured(true, 59);
+    auto stalled = good;
+    stalled.add({{"seconds", 1}, {"received", 60}, {"presented", 20}, {"hardware", true}});
+    QVERIFY(stalled.presentedFps() >= 56);
+    QVERIFY(!stalled.meetsTarget());
+    QCOMPARE(StreamBenchmark::recommend({software, laggy, good}), 2);
+    QCOMPARE(StreamBenchmark::recommend({software, laggy, stalled}), -1);
+    auto direct = good;
+    direct.mode["route"] = "direct";
+    QCOMPARE(StreamBenchmark::recommend({direct, good}), -1);
+    auto otherDisplay = good;
+    otherDisplay.mode["width"] = 1920;
+    QCOMPARE(StreamBenchmark::recommend({otherDisplay, good}), -1);
 }
 
 void TestPlankBroker::remoteStreamSetupRanksAdvertisedNvencProfiles()

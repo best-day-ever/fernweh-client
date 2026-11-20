@@ -11,6 +11,7 @@ Item {
                                            qsTr("Starting %1...").arg(appName)
     property bool isResume : false
     property bool quitAfter : false
+    property bool benchmark: false
 
     function stageStarting(stage)
     {
@@ -50,18 +51,30 @@ Item {
 
     function activeSessionTakeoverRequested(text)
     {
+        if (benchmark) {
+            session.respondToActiveSessionTakeover(false)
+            return
+        }
         activeSessionTakeoverDialog.text = text
         activeSessionTakeoverDialog.open()
     }
 
     function desktopSignOutRequested(text)
     {
+        if (benchmark) {
+            session.respondToDesktopSignOut(false)
+            return
+        }
         desktopSignOutDialog.text = text
         desktopSignOutDialog.open()
     }
 
     function desktopCollaborationRequested(text, signOutAvailable, unlockRequired)
     {
+        if (benchmark) {
+            session.cancelConnectionStart()
+            return
+        }
         desktopCollaborationDialog.text = text
         desktopCollaborationDialog.signOutAvailable = signOutAvailable
         desktopCollaborationDialog.unlockRequired = unlockRequired
@@ -122,7 +135,7 @@ Item {
             // Display any launch errors. We do this after
             // the Qt UI is visible again to prevent losing
             // focus on the dialog.
-            if (streamSegueErrorDialog.text) {
+            if (streamSegueErrorDialog.text && !benchmark) {
                 streamSegueErrorDialog.quitAfter = quitAfter
                 streamSegueErrorDialog.open()
             }

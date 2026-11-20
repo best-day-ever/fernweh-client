@@ -7,6 +7,7 @@
 #include "settings/plankclientpolicy.h"
 
 #include <QThread>
+#include <QJsonObject>
 #include <QReadWriteLock>
 #include <QSettings>
 #include <QRunnable>
@@ -150,6 +151,7 @@ public:
     QString plankSessionTargetDisplay;
     QString plankSessionDisplayNotice;
     bool plankAutomaticVideoProfile = false; // Built-in broker settings only.
+    QJsonObject plankBenchmarkRecommendation; // Advisory until exact decoder and geometry checks pass.
 
     // Persisted traits
     NvAddress localAddress;

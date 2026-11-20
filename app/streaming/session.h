@@ -155,7 +155,9 @@ public:
     virtual ~Session();
 
     Q_INVOKABLE void exec(QWindow* qtWindow);
-    void publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder);
+    void publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder, quint32 elapsedMs);
+    void enableStreamBenchmark() { m_MeasureStreamBenchmark = true; }
+    void endStreamBenchmark();
     void publishPenMetrics(const PlankPenActivity& activity);
     static QString decoderFailureMessage(int videoFormat);
 
@@ -268,6 +270,7 @@ signals:
     void connectionStarted();
     void diagnosticConnectionLost(int code);
     void diagnosticStreamParameters(QJsonObject parameters);
+    void streamBenchmarkSample(QJsonObject sample);
     void diagnosticLifecycle(QJsonObject lifecycle, bool final);
 
     void sessionCleanupWaitChanged(bool waiting, QString text);
@@ -295,6 +298,7 @@ private:
     std::atomic_bool m_ApplicationExitRequested{false};
 #endif
     SessionDiagnostics m_Diagnostics;
+    bool m_MeasureStreamBenchmark = false;
     void diagnosticPhase(SessionDiagnostics::Phase phase);
     void publishDiagnosticLifecycle(bool final = false);
     void execInternal();
