@@ -11,10 +11,20 @@ Fernweh uses two complementary tablet paths on Windows:
   physical tablet on a bounded asynchronous worker. Protected generic mouse/keyboard
   compatibility collections keep using ordinary SDL input. Feature requests
   route across collections belonging to the same physical USB interface.
-- Windows Ink pen events provide the automatic fallback if a tablet is not
+- Native Windows pen samples provide the automatic fallback if a tablet is not
   connected by USB, the Windows driver denies HID access, or raw attachment
-  cannot complete. Enable **Use Windows Ink** in the Wacom driver for this
-  fallback. It carries position, pressure, tilt, eraser and pen buttons;
+  cannot complete. Windows Ink supplies position, pressure, tilt, eraser and pen buttons.
+  Fernweh reads each complete pointer sample while its native message is valid,
+  retaining fractional coordinates without pairing delayed SDL positions with
+  another sample's pressure. SDL pen events remain a fallback when native
+  sampling is unavailable.
+- When the installed driver supplies WinTab, Fernweh opens its shared system
+  context. WinTab augments Ink pressure/contact, including very light strokes
+  and pressure changes while stationary. If Ink is disabled or stops sending,
+  WinTab can drive position/contact after a short quiet interval; lift the pen
+  before beginning a new stroke after takeover. Ink remains the source of tilt
+  where available; WinTab-only tilt is not implemented.
+  Enable **Use Windows Ink** in the Wacom driver for full normalized pen data.
   ExpressKeys, touch and device-specific wheels require the raw path. The
   first-generation Intuos Pro PTH-451/651/851 uses this fallback because its
   Linux driver requires USB interface metadata UHID cannot reproduce.
@@ -29,7 +39,10 @@ reconnecting it is discovered automatically. A different physical tablet with
 identical VID/PID is never combined with the first one.
 
 To force Windows Ink for troubleshooting, launch Fernweh with the environment
-variable `PLANK_WINDOWS_PEN_INPUT=1`. Raw HID uses only Wacom USB devices and
+variable `PLANK_WINDOWS_PEN_INPUT=1`; this selects normalized native/WinTab input
+instead of raw USB. Set `PLANK_WINTAB=0` as well to isolate Windows Ink.
+WinTab is loaded only from the Windows system directory and is optional.
+Raw HID uses only Wacom USB devices and
 requires no replacement driver, administrator access, or driver installation.
 Some Windows drivers reserve collections exclusively; Fernweh leaves those
 alone and uses Windows Ink rather than replacing or disabling their driver.
@@ -41,7 +54,11 @@ numbered and unnumbered reports, padding, global push/pop, malformed and
 oversized layouts), first-generation routing, bounded host-control parsing,
 bounded lifecycle barriers, unnumbered control-report ID slots, longest-report
 GET buffers, and stale asynchronous completion rejection after reconnect. The existing
-`macpen` suite exercises the shared SDL pen translation used by Windows.
+`macpen` suite exercises the shared normalized pen translation used by Windows.
+The `windowspenlogic` suite checks fractional-position bounds, Ink/WinTab
+ownership, complete pressure ramps, light-stroke edges and contact cancellation.
+The owned Windows host-cursor surface is click-through and does not activate
+the stream; native fixtures check ownership, focus and destruction separately.
 
 These checks do not qualify a physical tablet. Before declaring a device fully
 supported, test its actual model and installed driver on Windows against a

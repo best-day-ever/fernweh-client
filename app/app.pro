@@ -148,6 +148,8 @@ win32 {
     }
 
     INCLUDEPATH += $$PWD/../libs/windows/include
+    LIBS += d3dcompiler.lib
+    HEADERS += streaming/video/ffmpeg-renderers/d3d11identity.h
     LIBS += ws2_32.lib winmm.lib dxva2.lib ole32.lib gdi32.lib user32.lib d3d9.lib dwmapi.lib dbghelp.lib
 }
 macx:!disable-prebuilts {
@@ -441,6 +443,10 @@ contains(DEFINES, HAVE_LIBINPUT_TABLET) {
 HEADERS += streaming/input/pentiltencoding.h
 
 win32 {
+    SOURCES += streaming/plankwin32cursor.cpp
+    HEADERS += streaming/plankwin32cursor.h streaming/plankwin32cursorlogic.h streaming/windowshow.h
+    SOURCES += streaming/input/windowspen.cpp
+    HEADERS += streaming/input/windowspen.h streaming/input/windowspenlogic.h
     SOURCES += streaming/input/windowsrawwacom.cpp
     HEADERS += streaming/input/windowsrawwacom.h streaming/input/windowswacomlogic.h \
         streaming/input/macrawwacomlogic.h streaming/input/macrawwacomasync.h \

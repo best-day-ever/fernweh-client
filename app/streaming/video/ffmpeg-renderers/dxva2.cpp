@@ -696,6 +696,8 @@ bool DXVA2Renderer::initializeDevice(SDL_Window* window, bool enableVsync)
 
 bool DXVA2Renderer::initialize(PDECODER_PARAMETERS params)
 {
+    if (params->presentationLayout && params->presentationLayout->isMultiOutput()) return false;
+
     if (qgetenv("DXVA2_ENABLED") == "0") {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "DXVA2 is disabled by environment variable");

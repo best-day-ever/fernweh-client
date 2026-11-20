@@ -147,6 +147,22 @@ public:
         send(m_State.tipDown ? LI_TOUCH_EVENT_MOVE : LI_TOUCH_EVENT_HOVER);
     }
 
+    // One native sample with a contact decision and position from the same
+    // OS packet. Repeated samples cannot produce duplicate DOWN/UP edges.
+    void handleSample(std::uint32_t penId, float x, float y, float pressure,
+                      bool contact, std::uint32_t flags)
+    {
+        beginOrContinuePen(penId);
+        const bool changed = m_State.tipDown != contact;
+        m_State.pressure = clamp01(pressure);
+        m_State.x = clamp01(x);
+        m_State.y = clamp01(y);
+        applyFlags(flags);
+        m_State.tipDown = contact;
+        send(changed ? (contact ? LI_TOUCH_EVENT_DOWN : LI_TOUCH_EVENT_UP) :
+                       (contact ? LI_TOUCH_EVENT_MOVE : LI_TOUCH_EVENT_HOVER));
+    }
+
     // SDL_EVENT_PEN_DOWN / SDL_EVENT_PEN_UP.
     void handleTouch(std::uint32_t penId, bool down, float normalizedX,
                       float normalizedY, std::uint32_t penInputFlags)
