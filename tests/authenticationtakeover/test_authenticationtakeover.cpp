@@ -1,4 +1,5 @@
 #include "../../app/backend/authenticationtakeover.h"
+#include <QAccessible>
 #include <QtTest>
 #include <QQmlComponent>
 #include <QQmlEngine>
@@ -63,16 +64,26 @@ private slots:
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
             button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint());
         QCOMPARE(connectClick.size(), 1);
+        auto *accessibleButton = QAccessible::queryAccessibleInterface(button);
+        QVERIFY(accessibleButton);
+        QCOMPARE(accessibleButton->text(QAccessible::Name), QStringLiteral("Connect to workstation-01"));
+        auto *actions = accessibleButton->actionInterface();
+        QVERIFY(actions);
+        actions->doAction(QAccessibleActionInterface::pressAction());
+        QCOMPARE(connectClick.size(), 2);
         card->setProperty("busy", true);
         QVERIFY(!button->isEnabled());
+        actions->doAction(QAccessibleActionInterface::pressAction());
+        QCOMPARE(connectClick.size(), 2);
         card->setProperty("busy", false);
-        QVariantMap host{{"name", "workstation-01"}, {"inUseBy", ""}, {"busy", false}};
+        QVariantMap host{{"name", "workstation-02"}, {"inUseBy", ""}, {"busy", false}};
         host["connectedUsers"] = QStringList();
         host["online"] = false;
         host["connectable"] = false;
         card->setProperty("host", host);
         QTRY_VERIFY(!people->isVisible());
         QVERIFY(!button->isEnabled());
+        QCOMPARE(accessibleButton->text(QAccessible::Name), QStringLiteral("Connect to workstation-02"));
         QVERIFY(warnings.isEmpty());
     }
 
