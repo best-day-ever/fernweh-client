@@ -33,6 +33,7 @@ struct Run
     double fecAfter = 0;
     double worstPresentedFps = 0;
     bool hardware = true;
+    bool timedOut = false;
 
     void add(const QJsonObject& sample)
     {
@@ -92,7 +93,7 @@ struct Run
     bool meetsTarget() const
     {
         const int fps = mode.value("fps").toInt();
-        return exercisedWorkload() && hardware &&
+        return !timedOut && exercisedWorkload() && hardware &&
                 presentedFps() >= fps * 0.95 && worstPresentedFps >= fps * minimumPresentationFraction;
     }
 };

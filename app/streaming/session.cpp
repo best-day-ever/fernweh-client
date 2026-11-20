@@ -1192,11 +1192,11 @@ void Session::publishPenMetrics(const PlankPenActivity& activity)
 #endif
 }
 
-void Session::endStreamBenchmark()
+bool Session::endStreamBenchmark()
 {
-    if (m_MeasureStreamBenchmark && s_ActiveSession == this) {
-        requestSessionQuit(SessionDiagnostics::End::QuitEvent);
-    }
+    if (!m_MeasureStreamBenchmark || s_ActiveSession != this || m_Lifecycle.stopping()) return false;
+    requestSessionQuit(SessionDiagnostics::End::QuitEvent);
+    return true;
 }
 
 void Session::publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder, quint32 elapsedMs)

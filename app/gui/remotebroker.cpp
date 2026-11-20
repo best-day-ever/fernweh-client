@@ -1113,6 +1113,7 @@ void RemoteBroker::finishStreamBenchmark(const QString& reason)
             {"mbps", run.videoMbps()}, {"freshCaptureFps", run.freshCaptureFps()},
             {"seconds", run.seconds}, {"motionSeconds", run.motionSeconds},
             {"exercised", run.exercisedWorkload()},
+            {"timedOut", run.timedOut},
             {"missing", run.missing},
             {"rtt", run.rttSamples > 0 ? run.totalRttMs / run.rttSamples : -1},
             {"fecBefore", run.lossSamples > 0 ? run.fecBefore / run.lossSamples : -1},
@@ -1143,7 +1144,7 @@ void RemoteBroker::attachStreamBenchmark(Session* session, const QString& compar
 {
     session->enableStreamBenchmark();
     const auto recordFailure = [this](const QString& message) {
-        if (streamBenchmarkRunning() && m_Benchmark.failure.isEmpty()) {
+        if (streamBenchmarkRunning() && m_Benchmark.failure.isEmpty() && !m_Benchmark.current.timedOut) {
             m_Benchmark.failure = message;
         }
     };
@@ -1154,6 +1155,7 @@ void RemoteBroker::attachStreamBenchmark(Session* session, const QString& compar
     });
     connect(session, &Session::streamBenchmarkSample, this, [this, session](const QJsonObject& sample) {
         if (!streamBenchmarkRunning() || !m_Benchmark.failure.isEmpty() || m_Benchmark.complete ||
+                m_Benchmark.current.timedOut ||
                 m_Benchmark.current.mode.isEmpty()) return;
         if (m_Benchmark.warmup > 0) {
             --m_Benchmark.warmup;
@@ -1176,16 +1178,22 @@ void RemoteBroker::attachStreamBenchmark(Session* session, const QString& compar
     });
     connect(session, &Session::connectionStarted, this, [this, owner = QPointer<Session>(session), recordFailure]() {
         QTimer::singleShot(25000, this, [this, owner, recordFailure]() {
-            if (owner && m_KeepaliveOwner == owner && streamBenchmarkRunning() && !m_Benchmark.complete) {
-                recordFailure(tr("The preview timed out before Fernweh could measure it."));
-                owner->endStreamBenchmark();
+            if (owner && m_KeepaliveOwner == owner && streamBenchmarkRunning() && !m_Benchmark.complete &&
+                    owner->endStreamBenchmark()) {
+                if (!m_Benchmark.current.mode.isEmpty() && m_Benchmark.failure.isEmpty()) {
+                    // The established preview timed out. Keep comparable
+                    // profiles that completed and advance to the next format.
+                    m_Benchmark.current.timedOut = true;
+                } else {
+                    recordFailure(tr("The preview timed out before Fernweh could measure it."));
+                }
             }
         });
     });
     connect(session, &Session::readyForDeletion, this, [this, comparisonKey]() {
         if (!streamBenchmarkRunning()) return;
         if (!m_Benchmark.current.mode.isEmpty()) m_Benchmark.runs.append(m_Benchmark.current);
-        if (!m_Benchmark.failure.isEmpty() || !m_Benchmark.complete) {
+        if (!m_Benchmark.failure.isEmpty() || (!m_Benchmark.complete && !m_Benchmark.current.timedOut)) {
             const QString message = m_Benchmark.failure.isEmpty() ?
                         tr("The preview was closed before the test finished.") : m_Benchmark.failure;
             finishStreamBenchmark(message);

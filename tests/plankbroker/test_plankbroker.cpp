@@ -4270,6 +4270,10 @@ void TestPlankBroker::streamBenchmarkRequiresSustainedHardwarePresentation()
     QVERIFY(!stalled.meetsTarget());
     QCOMPARE(StreamBenchmark::recommend({software, laggy, good}), 2);
     QCOMPARE(StreamBenchmark::recommend({software, laggy, stalled}), -1);
+    auto timedOut = good;
+    timedOut.timedOut = true;
+    QVERIFY(!timedOut.meetsTarget());
+    QCOMPARE(StreamBenchmark::recommend({timedOut, good, timedOut}), 1);
     auto direct = good;
     direct.mode["route"] = "direct";
     QCOMPARE(StreamBenchmark::recommend({direct, good}), -1);

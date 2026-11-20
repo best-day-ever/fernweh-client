@@ -157,7 +157,7 @@ public:
     Q_INVOKABLE void exec(QWindow* qtWindow);
     void publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder, quint32 elapsedMs);
     void enableStreamBenchmark() { m_MeasureStreamBenchmark = true; }
-    void endStreamBenchmark();
+    bool endStreamBenchmark();
     void publishPenMetrics(const PlankPenActivity& activity);
     static QString decoderFailureMessage(int videoFormat);
 

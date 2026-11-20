@@ -224,6 +224,12 @@ Item {
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
+                            visible: modelData.timedOut
+                            text: qsTr("The preview timed out before it finished measuring.")
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
                             visible: modelData.lowestPresented >= 0 && modelData.lowestPresented < modelData.presentationFloor
                             text: qsTr("Lowest presentation sample %1 fps · %2 fps required")
                                   .arg(modelData.lowestPresented.toFixed(1)).arg(modelData.presentationFloor.toFixed(1))
