@@ -385,11 +385,17 @@ private:
 #endif
 #endif
 
-    bool validateLaunch(SDL_Window* testWindow = nullptr);
+    struct DecoderProbe {
+        int capabilities;
+        int colorSpace;
+        int colorRange;
+    };
+
+    bool validateLaunch(SDL_Window* testWindow, std::optional<DecoderProbe>& probe);
 
     void emitLaunchWarning(QString text);
 
-    bool populateDecoderProperties(SDL_Window* testWindow = nullptr);
+    void populateDecoderProperties(const DecoderProbe& probe);
 
     IAudioRenderer* createAudioRenderer(const POPUS_MULTISTREAM_CONFIGURATION opusConfig);
 
@@ -460,16 +466,6 @@ private:
 
     void updateOptimalWindowDisplayMode();
 
-    enum class DecoderAvailability {
-        None,
-        Software,
-        Hardware
-    };
-
-    DecoderAvailability getDecoderAvailability(int videoFormat, int width, int height, int frameRate,
-                                               bool enableIdentityGbr = false,
-                                               SDL_Window* testWindow = nullptr);
-
     static
     bool chooseDecoder(int videoFormat, int width, int height,
                        int frameRate, bool enableVsync, bool testOnly,
@@ -486,7 +482,7 @@ private:
                            DecoderSelectionMode::PreferExactHardwareThenSoftware);
 
     bool isIdentityGbrEnabledForFormat(int videoFormat) const;
-    bool selectAutomaticVideoProfile(SDL_Window* testWindow);
+    bool selectAutomaticVideoProfile(SDL_Window* testWindow, std::optional<DecoderProbe>& probe);
     DecoderCaptureSource decoderCaptureSource() const;
     DecoderEncoderBackend decoderEncoderBackend() const;
 

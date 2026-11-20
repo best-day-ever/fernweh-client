@@ -551,7 +551,7 @@ bool Session::isIdentityGbrEnabledForFormat(int videoFormat) const
            (m_Computer->serverCodecModeSupport & SCM_IDENTITY_GBR_444);
 }
 
-bool Session::selectAutomaticVideoProfile(SDL_Window* testWindow)
+bool Session::selectAutomaticVideoProfile(SDL_Window* testWindow, std::optional<DecoderProbe>& probe)
 {
     if (!m_Computer->plankAutomaticVideoProfile) return true;
 
@@ -562,6 +562,7 @@ bool Session::selectAutomaticVideoProfile(SDL_Window* testWindow)
     caps.encodingModes = m_Computer->plankEncodingModes;
     const int width = m_StreamConfig.width;
     const int height = m_StreamConfig.height;
+    const int fps = m_StreamConfig.fps;
     const auto original = m_PlankVideoProfile;
     auto profiles = RemoteStreamSetup::automaticNvencProfiles(caps);
     const auto& recommended = m_Computer->plankBenchmarkRecommendation;
@@ -586,15 +587,21 @@ bool Session::selectAutomaticVideoProfile(SDL_Window* testWindow)
             continue;
         }
         IVideoDecoder* decoder = nullptr;
-        if (chooseDecoder(format, width, height, m_StreamConfig.fps, false, true, decoder,
+        if (chooseDecoder(format, width, height, fps, false, true, decoder,
                           identity, decoderCaptureSource(), DecoderEncoderBackend::NvencDirect,
                           m_RendererFactory, testWindow, false, DecoderSelectionMode::ExactHardwareOnly)) {
+            const DecoderProbe tested {decoder->getDecoderCapabilities(), decoder->getDecoderColorspace(),
+                                       decoder->getDecoderColorRange()};
             delete decoder;
             m_PlankVideoProfile = static_cast<StreamingPreferences::PlankVideoProfile>(profile);
             m_PlankBitrateKbps = StreamingPreferences::plankBitrateForProfile(
                         m_Computer->plankProfileBitratesKbps, profile);
             qInfo() << "Automatic video profile:" << encoding->mode << "(hardware decoder verified)";
-            return m_PlankVideoProfile == original || configurePlankLaunchGeometry();
+            if (m_PlankVideoProfile != original && !configurePlankLaunchGeometry()) return false;
+            if (width == m_StreamConfig.width && height == m_StreamConfig.height && fps == m_StreamConfig.fps) {
+                probe = tested;
+            }
+            return true;
         }
     }
     qInfo() << "Automatic video profile: keeping"
@@ -670,26 +677,6 @@ int Session::drSubmitDecodeUnit(PDECODE_UNIT du)
     return s_ActiveSession->m_VideoDecoder->submitDecodeUnit(du);
 }
 
-Session::DecoderAvailability
-Session::getDecoderAvailability(int videoFormat, int width, int height, int frameRate,
-                                bool enableIdentityGbr, SDL_Window* testWindow)
-{
-    IVideoDecoder* decoder;
-
-    if (!chooseDecoder(videoFormat, width, height, frameRate,
-                       false, true, decoder, enableIdentityGbr,
-                       decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory,
-                       testWindow)) {
-        return DecoderAvailability::None;
-    }
-
-    bool hw = decoder->isHardwareAccelerated();
-
-    delete decoder;
-
-    return hw ? DecoderAvailability::Hardware : DecoderAvailability::Software;
-}
-
 DecoderCaptureSource Session::decoderCaptureSource() const
 {
     if (m_PlankCaptureSource == StreamingPreferences::PLANK_CAPTURE_SCREENCAPTUREKIT) {
@@ -708,23 +695,9 @@ DecoderEncoderBackend Session::decoderEncoderBackend() const
                 DecoderEncoderBackend::NvencDirect : DecoderEncoderBackend::SoftwareCuda;
 }
 
-bool Session::populateDecoderProperties(SDL_Window* testWindow)
+void Session::populateDecoderProperties(const DecoderProbe& probe)
 {
-    IVideoDecoder* decoder;
-
-    if (!chooseDecoder(m_SupportedVideoFormats.first(),
-                       m_StreamConfig.width,
-                       m_StreamConfig.height,
-                       m_StreamConfig.fps,
-                       false, true, decoder,
-                       isIdentityGbrEnabledForFormat(m_SupportedVideoFormats.first()),
-                       decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory,
-                       testWindow)) {
-        emit displayLaunchError(decoderFailureMessage(m_SupportedVideoFormats.first()));
-        return false;
-    }
-
-    m_VideoCallbacks.capabilities = decoder->getDecoderCapabilities();
+    m_VideoCallbacks.capabilities = probe.capabilities;
     if (m_VideoCallbacks.capabilities & CAPABILITY_PULL_RENDERER) {
         // It is an error to pass a push callback when in pull mode
         m_VideoCallbacks.submitDecodeUnit = nullptr;
@@ -750,7 +723,7 @@ bool Session::populateDecoderProperties(SDL_Window* testWindow)
                         m_StreamConfig.colorSpace);
         }
         else {
-            m_StreamConfig.colorSpace = decoder->getDecoderColorspace();
+            m_StreamConfig.colorSpace = probe.colorSpace;
         }
 
         m_StreamConfig.colorRange = qEnvironmentVariableIntValue("COLOR_RANGE_OVERRIDE", &ok);
@@ -759,13 +732,9 @@ bool Session::populateDecoderProperties(SDL_Window* testWindow)
                         m_StreamConfig.colorRange);
         }
         else {
-            m_StreamConfig.colorRange = decoder->getDecoderColorRange();
+            m_StreamConfig.colorRange = probe.colorRange;
         }
     }
-
-    delete decoder;
-
-    return true;
 }
 
 Session::Session(NvComputer* computer, NvApp& app,
@@ -2134,7 +2103,8 @@ bool Session::initialize(IFFmpegRendererFactory* presenter)
     m_StreamConfig.fps = (m_Computer->plankAuthentication ||
                           m_PlankCaptureSource == StreamingPreferences::PLANK_CAPTURE_SCREENCAPTUREKIT) ?
                 StreamingPreferences::PlankFramesPerSecond : m_Preferences->fps;
-    if (!selectAutomaticVideoProfile(testWindow)) {
+    std::optional<DecoderProbe> probe;
+    if (!selectAutomaticVideoProfile(testWindow, probe)) {
         return false;
     }
     m_StreamConfig.bitrate = m_PlankBitrateKbps;
@@ -2188,20 +2158,11 @@ bool Session::initialize(IFFmpegRendererFactory* presenter)
 
     // Check for validation errors/warnings and emit
     // signals for them, if appropriate
-    bool ret = validateLaunch(testWindow);
-
-    if (ret) {
-        // Video format is now locked in
-        m_StreamConfig.supportedVideoFormats = m_SupportedVideoFormats.front();
-
-        // Populate decoder-dependent properties.
-        // Must be done after validateLaunch() since m_StreamConfig is finalized.
-        ret = populateDecoderProperties(testWindow);
-    }
-
-    if (!ret) {
+    if (!validateLaunch(testWindow, probe)) {
         return false;
     }
+    m_StreamConfig.supportedVideoFormats = m_SupportedVideoFormats.front();
+    populateDecoderProperties(*probe);
 
     keepSdlVideo = initializedSdlVideo;
     return true;
@@ -2222,7 +2183,7 @@ void Session::emitLaunchWarning(QString text)
     }
 }
 
-bool Session::validateLaunch(SDL_Window* testWindow)
+bool Session::validateLaunch(SDL_Window* testWindow, std::optional<DecoderProbe>& probe)
 {
     m_SupportedVideoFormats.removeByMask(
                 ~m_SupportedVideoFormats.maskByServerCodecModes(m_Computer->serverCodecModeSupport));
@@ -2231,21 +2192,19 @@ bool Session::validateLaunch(SDL_Window* testWindow)
         return false;
     }
 
-    // Probe exact-format hardware, then exact-format software. Never silently
-    // substitute the selected codec, chroma sampling or bit depth.
-    while (!m_SupportedVideoFormats.isEmpty()) {
-        const auto availability = getDecoderAvailability(
-                    m_SupportedVideoFormats.front(),
-                    m_StreamConfig.width,
-                    m_StreamConfig.height,
-                    m_StreamConfig.fps,
-                    isIdentityGbrEnabledForFormat(m_SupportedVideoFormats.front()),
-                    testWindow);
-        if (availability == DecoderAvailability::None) {
+    // Automatic already proved the exact format at this geometry. For a
+    // manual choice or geometry change, probe exact hardware then software.
+    while (!probe && !m_SupportedVideoFormats.isEmpty()) {
+        const int format = m_SupportedVideoFormats.front();
+        IVideoDecoder* decoder = nullptr;
+        if (chooseDecoder(format, m_StreamConfig.width, m_StreamConfig.height, m_StreamConfig.fps,
+                          false, true, decoder, isIdentityGbrEnabledForFormat(format),
+                          decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory, testWindow)) {
+            probe = DecoderProbe{decoder->getDecoderCapabilities(), decoder->getDecoderColorspace(),
+                                 decoder->getDecoderColorRange()};
+            delete decoder;
+        } else {
             m_SupportedVideoFormats.removeFirst();
-        }
-        else {
-            break;
         }
     }
     if (m_SupportedVideoFormats.isEmpty()) {
