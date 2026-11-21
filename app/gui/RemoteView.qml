@@ -79,10 +79,16 @@ Item {
                                                })
             stackView.push(segue)
         }
-        function onStreamBenchmarkFinished(runs, message) {
+        function onStreamBenchmarkFinished(runs, message, canSave) {
             benchmarkResults.runs = runs
             benchmarkResults.message = message
+            benchmarkResults.canSave = canSave
             benchmarkResults.open()
+        }
+        function onStreamUpgradeReviewRequired(hostId, hostName) {
+            streamUpgradeReview.hostId = hostId
+            streamUpgradeReview.text = qsTr("Fernweh can test the connection to %1 and find a hardware profile for your displays. You can also keep your current stream settings.").arg(hostName)
+            streamUpgradeReview.open()
         }
         function onDisplaySetupRequired(hostId, hostName, reason) {
             // Start with the applicable basic editor; Advanced is an explicit choice.
@@ -155,6 +161,31 @@ Item {
         }
     }
 
+    NavigableMessageDialog {
+        id: streamUpgradeReview
+        property string hostId
+        property var keepButton
+        title: qsTr("Review streaming settings")
+        modal: true
+        standardButtons: Dialog.Yes | Dialog.No
+        acceptButtonText: qsTr("Run benchmark")
+        rejectButtonText: qsTr("Keep my settings")
+        closePolicy: Popup.CloseOnEscape
+        onOpened: keepButton = standardButton(Dialog.No)
+        onAccepted: {
+            RemoteBroker.finishStreamUpgradeReview(hostId)
+            benchmarkStart.hostId = hostId
+            benchmarkStart.open()
+        }
+        Connections {
+            target: streamUpgradeReview.keepButton || null
+            function onClicked() {
+                RemoteBroker.finishStreamUpgradeReview(streamUpgradeReview.hostId)
+                RemoteBroker.connectToHost(streamUpgradeReview.hostId)
+            }
+        }
+    }
+
     NavigableDialog {
         id: benchmarkStart
         property string hostId
@@ -174,11 +205,19 @@ Item {
         id: benchmarkResults
         property var runs: []
         property string message
+        property bool canSave: false
         title: qsTr("Connection test results")
         width: Math.min(630, remoteView.width - 40)
         height: Math.min(implicitHeight, remoteView.height - 20)
         modal: true
-        standardButtons: Dialog.Close
+        standardButtons: canSave ? Dialog.Ok | Dialog.Close : Dialog.Close
+        onOpened: {
+            if (canSave) standardButton(Dialog.Ok).text = qsTr("Use recommended settings")
+        }
+        onAccepted: {
+            if (canSave && !RemoteBroker.acceptStreamBenchmarkRecommendation())
+                remoteView.errorText = qsTr("Fernweh could not save this recommendation. Your stream settings are still available.")
+        }
 
         ScrollView {
             anchors.fill: parent
@@ -398,6 +437,14 @@ Item {
                 text: qsTr("Stream quality")
                 font.bold: true
                 font.pointSize: 13
+            }
+            Button {
+                visible: displaySetupDialog.stream.hasBenchmarkChoice === true
+                text: qsTr("Clear saved benchmark recommendation")
+                onClicked: {
+                    RemoteBroker.clearStreamBenchmarkRecommendation(displaySetupDialog.hostId)
+                    displaySetupDialog.loadStream()
+                }
             }
             Label {
                 Layout.fillWidth: true

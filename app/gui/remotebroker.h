@@ -79,6 +79,9 @@ public:
     // streamSetupRequired instead of streaming with something else.
     Q_INVOKABLE void connectToHost(const QString& hostId);
     Q_INVOKABLE void startStreamBenchmark(const QString& hostId);
+    Q_INVOKABLE void finishStreamUpgradeReview(const QString& hostId);
+    Q_INVOKABLE bool acceptStreamBenchmarkRecommendation();
+    Q_INVOKABLE void clearStreamBenchmarkRecommendation(const QString& hostId);
     bool streamBenchmarkRunning() const { return !m_Benchmark.hostId.isEmpty(); }
     // Per-workstation display setup kept in the Client's local settings.
     // Keys: configured, layoutChoice, virtualMode1, virtualMode2, scalingChoice,
@@ -154,7 +157,8 @@ signals:
     // Generic, user-facing message (never broker- or host-supplied text).
     void errorOccurred(QString message);
     void connectReady(QString hostName);
-    void streamBenchmarkFinished(QVariantList runs, QString message);
+    void streamBenchmarkFinished(QVariantList runs, QString message, bool canSave);
+    void streamUpgradeReviewRequired(QString hostId, QString hostName);
     void displaySetupRequired(QString hostId, QString hostName, QString reason);
     // The saved (or default) stream settings do not fit the workstation;
     // reason is user-facing.
@@ -202,11 +206,19 @@ private:
         QVector<StreamBenchmark::Run> runs;
         StreamBenchmark::Run current;
         QString comparisonKey;
+        QString manualSettings;
         QString failure;
         int warmup = 0;
         bool complete = false;
     };
     Benchmark m_Benchmark;
+    struct BenchmarkOffer {
+        QString hostId;
+        QString context;
+        QString manualSettings;
+        QJsonObject mode;
+    };
+    BenchmarkOffer m_BenchmarkOffer;
     struct BenchmarkRecommendation {
         QJsonObject mode;
         qint64 expires = 0;

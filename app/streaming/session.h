@@ -354,6 +354,7 @@ private:
     bool negotiatePlankTransportSession(quint16 sessionPort, QString& errorMessage);
 
     void stopPlankTransportDataPlane();
+    void queuePlankTransportDisconnect();
 
 #ifdef PLANK_TRANSPORT
     void startPlankTransportMediaReceivers();
@@ -571,6 +572,7 @@ private:
     StreamingPreferences::PlankCaptureSource m_PlankCaptureSource;
 #ifdef PLANK_TRANSPORT
     PlankTransportNativeEndpoint* m_PlankTransportEndpoint = nullptr;
+    bool m_PlankDisconnectQueued = false;
     std::atomic_bool m_PlankTransportReceiversStopping {false};
     std::thread m_PlankTransportVideoThread;
     std::thread m_PlankTransportAudioThread;

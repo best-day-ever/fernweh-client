@@ -437,6 +437,7 @@ private slots:
     void remoteStreamSetupRejectsInvalidEntries();
     void remoteStreamSetupPicksBitrateForRoute();
     void remoteStreamSetupLayersDefaults();
+    void benchmarkChoicePreservesAndTracksSavedSettings();
     void remoteStreamSetupSeedsOnlyFromExactBookmark();
     void remoteStreamSetupReportsUnusableChoice();
     void remoteStreamSetupRanksAdvertisedNvencProfiles();
@@ -4114,6 +4115,54 @@ void TestPlankBroker::remoteStreamSetupLayersDefaults()
     RemoteStreamSetup::clearDefaults(settings);
     QCOMPARE(RemoteStreamSetup::loadDefaults(settings).mode, RemoteStreamSetup::Unset);
     QVERIFY(!RemoteStreamSetup::saveDefaults(settings, customStream(StreamingPreferences::PLANK_CAPTURE_NVFBC_8BIT, 99)));
+}
+
+void TestPlankBroker::benchmarkChoicePreservesAndTracksSavedSettings()
+{
+    using namespace RemoteStreamSetup;
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("client.ini"));
+    const QString hostId = QStringLiteral("workstation.example.test");
+    const QString otherHost = QStringLiteral("other.example.test");
+    const QString relayContext = QStringLiteral("workstation/screens/graphics/relay");
+    const int legacy = StreamingPreferences::PLANK_PROFILE_NVENC_H264_8BIT_444;
+    auto manuallySaved = customStream(StreamingPreferences::PLANK_CAPTURE_NVFBC_8BIT, legacy);
+    manuallySaved.internetBitratesKbps[legacy] = 80000;
+    const QJsonObject choice{{"profile", StreamingPreferences::PLANK_PROFILE_NVENC_HEVC_10BIT_420},
+                             {"bitrate_kbps", 30000}, {"width", 3840}, {"height", 2160}, {"fps", 60}};
+
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        QVERIFY(!benchmarkReviewPending(settings, hostId, Resolution{}));
+        QVERIFY(saveDefaults(settings, manuallySaved));
+        const auto effective = resolve({}, nullptr, loadDefaults(settings), LinuxPlatform);
+        QVERIFY(benchmarkReviewPending(settings, hostId, effective));
+        finishBenchmarkReview(settings, hostId);
+        QVERIFY(!hasBenchmarkChoice(settings, hostId));
+        QVERIFY(!benchmarkReviewPending(settings, hostId, effective));
+        QCOMPARE(bitrateFor(loadDefaults(settings), Internet), 80000);
+        saveBenchmarkChoice(settings, hostId, Internet, relayContext, setupKey(effective), choice);
+        settings.sync();
+        QCOMPARE(settings.status(), QSettings::NoError);
+    }
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        auto effective = resolve({}, nullptr, loadDefaults(settings), LinuxPlatform);
+        QCOMPARE(effective.setup.videoProfile, legacy);
+        QVERIFY(!benchmarkReviewPending(settings, hostId, effective));
+        QVERIFY(benchmarkReviewPending(settings, otherHost, effective));
+        QVERIFY(hasBenchmarkChoice(settings, hostId));
+        QCOMPARE(loadBenchmarkChoice(settings, hostId, Internet, relayContext, setupKey(effective)), choice);
+        QVERIFY(loadBenchmarkChoice(settings, hostId, OfficeNetwork, relayContext, setupKey(effective)).isEmpty());
+        QVERIFY(loadBenchmarkChoice(settings, otherHost, Internet, relayContext, setupKey(effective)).isEmpty());
+        QVERIFY(loadBenchmarkChoice(settings, hostId, Internet, QStringLiteral("changed-displays"),
+                                    setupKey(effective)).isEmpty());
+        effective.setup.internetBitratesKbps[legacy] = 60000;
+        QVERIFY(loadBenchmarkChoice(settings, hostId, Internet, relayContext, setupKey(effective)).isEmpty());
+        clearBenchmarkChoices(settings, hostId);
+        QVERIFY(!hasBenchmarkChoice(settings, hostId));
+        QCOMPARE(bitrateFor(loadDefaults(settings), Internet), 80000);
+    }
 }
 
 void TestPlankBroker::remoteStreamSetupSeedsOnlyFromExactBookmark()
