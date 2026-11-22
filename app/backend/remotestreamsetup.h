@@ -8,8 +8,8 @@
 // built-in default at the bottom. Header-only so the broker test suite can
 // exercise it without the GUI.
 //
-// resolve() picks the settings layer. Only the built-in Linux setting uses
-// automatic profile selection. Saved choices keep their exact profile.
+// resolve() picks the settings layer. Automatic video uses the built-in
+// Linux setting. A connection can opt into it without changing saved choices.
 
 #include "settings/streamingpreferences.h"
 
@@ -494,18 +494,21 @@ inline QString problemFor(const Setup& setup, const Capabilities& caps)
     return problemFor(setup.captureSource, setup.videoProfile, caps);
 }
 
-inline QVector<int> automaticNvencProfiles(const Capabilities& caps)
+inline QVector<int> automaticNvencProfiles(const Capabilities& caps, Route route = OfficeNetwork)
 {
     using P = StreamingPreferences;
     QVector<int> profiles;
     if (caps.platform != LinuxPlatform || caps.encodingModes.isEmpty()) {
         return profiles;
     }
-    for (const int profile : {P::PLANK_PROFILE_NVENC_HEVC_10BIT_444,
-                              P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
-                              P::PLANK_PROFILE_NVENC_HEVC_10BIT_420,
-                              P::PLANK_PROFILE_NVENC_H264_8BIT_420,
-                              P::PLANK_PROFILE_NVENC_H264_8BIT_444}) {
+    const QVector<int> candidates = route == Internet ?
+                QVector<int>{P::PLANK_PROFILE_NVENC_HEVC_10BIT_420, P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                             P::PLANK_PROFILE_NVENC_HEVC_10BIT_444, P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                             P::PLANK_PROFILE_NVENC_H264_8BIT_444} :
+                QVector<int>{P::PLANK_PROFILE_NVENC_HEVC_10BIT_444, P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                             P::PLANK_PROFILE_NVENC_HEVC_10BIT_420, P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                             P::PLANK_PROFILE_NVENC_H264_8BIT_444};
+    for (const int profile : candidates) {
         if (problemFor(P::PLANK_CAPTURE_NVFBC_8BIT, profile, caps).isEmpty()) {
             profiles.append(profile);
         }

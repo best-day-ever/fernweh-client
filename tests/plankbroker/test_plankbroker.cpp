@@ -4345,9 +4345,16 @@ void TestPlankBroker::remoteStreamSetupRanksAdvertisedNvencProfiles()
                                 P::PLANK_PROFILE_NVENC_H264_8BIT_420,
                                 P::PLANK_PROFILE_NVENC_H264_8BIT_444};
     QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(full), expected);
+    const QVector<int> relay{P::PLANK_PROFILE_NVENC_HEVC_10BIT_420,
+                             P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                             P::PLANK_PROFILE_NVENC_HEVC_10BIT_444,
+                             P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                             P::PLANK_PROFILE_NVENC_H264_8BIT_444};
+    QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(full, RemoteStreamSetup::Internet), relay);
 
     const QVector<int> older{P::PLANK_PROFILE_NVENC_HEVC_8BIT_444, P::PLANK_PROFILE_NVENC_H264_8BIT_444};
     QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(linuxHost(0, modes)), older);
+    QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(linuxHost(0, modes), RemoteStreamSetup::Internet), older);
     QVERIFY(RemoteStreamSetup::automaticNvencProfiles(linuxHost(full.featureFlags, {})).isEmpty());
     QVERIFY(RemoteStreamSetup::automaticNvencProfiles(linuxHost(full.featureFlags, {modes.last()})).isEmpty());
     auto mac = full;

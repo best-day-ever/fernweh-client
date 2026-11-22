@@ -78,6 +78,7 @@ public:
     // the stream settings cannot work on the workstation it emits
     // streamSetupRequired instead of streaming with something else.
     Q_INVOKABLE void connectToHost(const QString& hostId);
+    Q_INVOKABLE void connectWithAutomaticVideo(const QString& hostId);
     Q_INVOKABLE void startStreamBenchmark(const QString& hostId);
     Q_INVOKABLE void finishStreamUpgradeReview(const QString& hostId);
     Q_INVOKABLE bool acceptStreamBenchmarkRecommendation();
@@ -195,7 +196,7 @@ private:
     void sendKeepalive();
     void sendPresence(bool connected);
     void configureDiagnostics();
-    void connectToHostImpl(const QString& hostId, int benchmarkProfile);
+    void connectToHostImpl(const QString& hostId, int benchmarkProfile, bool useAutomaticVideo = false);
     void attachStreamBenchmark(Session* session, const QString& comparisonKey);
     void advanceStreamBenchmark();
     void finishStreamBenchmark(const QString& reason = QString());

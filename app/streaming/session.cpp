@@ -565,7 +565,8 @@ bool Session::selectAutomaticVideoProfile(SDL_Window* testWindow, std::optional<
     const int height = m_StreamConfig.height;
     const int fps = m_StreamConfig.fps;
     const auto original = m_PlankVideoProfile;
-    auto profiles = RemoteStreamSetup::automaticNvencProfiles(caps);
+    auto profiles = RemoteStreamSetup::automaticNvencProfiles(caps, m_Computer->plankAutomaticVideoOnRelay ?
+                RemoteStreamSetup::Internet : RemoteStreamSetup::OfficeNetwork);
     const auto& recommended = m_Computer->plankBenchmarkRecommendation;
     const int preferred = recommended.value("profile").toInt(-1);
     const int recommendedKbps = recommended.value("bitrate_kbps").toInt();
@@ -4077,8 +4078,49 @@ bool Session::startConnectionAsync(bool reconnecting,
                           acceptedClipboardSync,
                           m_ResolvedPrimaryOutput);
         };
+        // A fresh Connect may reach the Host before QUIC notices that the old
+        // process exited. The Host rejects this launch before claiming its
+        // bearer, so retry only that explicit response on the established route.
+        const auto startAfterPreviousTransport = [&]() {
+            const bool mayWait = m_Computer->plankAuthentication && !macCapture &&
+                    !reconnecting && !takeOverActiveSession && !isCollaborator();
+            QElapsedTimer wait;
+            const auto clearWait = qScopeGuard([&] {
+                if (wait.isValid()) {
+                    m_WaitingForSessionCleanup.store(false);
+                    emit sessionCleanupWaitChanged(false, QString());
+                }
+            });
+            while (!m_ConnectionStartCancelled.load() && !m_Lifecycle.stopping()) {
+                try {
+                    startApp();
+                    return true;
+                } catch (const GfeHttpResponseException& error) {
+                    if (!mayWait || !PlankReconnectPolicy::activeDesktopResponse(
+                                error.getStatusCode(), error.getStatusMessage()) ||
+                            !http->displayArrangementError().isEmpty() ||
+                            http->desktopSignOut().state != PlankDesktopSignOut::State::None) {
+                        throw;
+                    }
+                    if (!wait.isValid()) {
+                        wait.start();
+                        m_WaitingForSessionCleanup.store(true);
+                        emit sessionCleanupWaitChanged(true, tr("Waiting for the previous connection to close…"));
+                    }
+                    constexpr int RetryIntervalMs = 500;
+                    constexpr int CancellationPollMs = 50;
+                    for (int elapsed = 0; elapsed < RetryIntervalMs; elapsed += CancellationPollMs) {
+                        if (m_ConnectionStartCancelled.load() || m_Lifecycle.stopping()) return false;
+                        if (wait.elapsed() >= PlankReconnectPolicy::PreviousTransportGraceMs) throw;
+                        QThread::msleep(CancellationPollMs);
+                    }
+                    if (wait.elapsed() >= PlankReconnectPolicy::PreviousTransportGraceMs) throw;
+                }
+            }
+            return false;
+        };
         try {
-            startApp();
+            if (!startAfterPreviousTransport()) return false;
         } catch (const GfeHttpResponseException& e) {
             const QString statusMessage = QString::fromUtf8(e.getStatusMessage());
             const QString arrangementError = http->displayArrangementError();
@@ -4115,9 +4157,7 @@ bool Session::startConnectionAsync(bool reconnecting,
                           QStringLiteral("Host display layout transition is currently unavailable")));
             const bool activeSessionConflict =
                     m_Computer->plankAuthentication &&
-                    e.getStatusCode() == 409 &&
-                    QString::fromUtf8(e.getStatusMessage()) ==
-                        QStringLiteral("PLANK workstation session is active");
+                    PlankReconnectPolicy::activeDesktopResponse(e.getStatusCode(), e.getStatusMessage());
             const PlankDesktopSignOut desktopConflict =
                     m_Computer->plankAuthentication ? http->desktopSignOut() :
                                                       PlankDesktopSignOut();

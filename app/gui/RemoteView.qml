@@ -87,7 +87,7 @@ Item {
         }
         function onStreamUpgradeReviewRequired(hostId, hostName) {
             streamUpgradeReview.hostId = hostId
-            streamUpgradeReview.text = qsTr("Fernweh can test the connection to %1 and find a hardware profile for your displays. You can also keep your current stream settings.").arg(hostName)
+            streamUpgradeReview.hostName = hostName
             streamUpgradeReview.open()
         }
         function onDisplaySetupRequired(hostId, hostName, reason) {
@@ -161,27 +161,51 @@ Item {
         }
     }
 
-    NavigableMessageDialog {
+    NavigableDialog {
         id: streamUpgradeReview
         property string hostId
-        property var keepButton
+        property string hostName
         title: qsTr("Review streaming settings")
+        width: Math.min(460, remoteView.width - 40)
         modal: true
-        standardButtons: Dialog.Yes | Dialog.No
-        acceptButtonText: qsTr("Run benchmark")
-        rejectButtonText: qsTr("Keep my settings")
         closePolicy: Popup.CloseOnEscape
-        onOpened: keepButton = standardButton(Dialog.No)
-        onAccepted: {
-            RemoteBroker.finishStreamUpgradeReview(hostId)
-            benchmarkStart.hostId = hostId
-            benchmarkStart.open()
-        }
-        Connections {
-            target: streamUpgradeReview.keepButton || null
-            function onClicked() {
-                RemoteBroker.finishStreamUpgradeReview(streamUpgradeReview.hostId)
-                RemoteBroker.connectToHost(streamUpgradeReview.hostId)
+        onOpened: automaticVideoButton.forceActiveFocus()
+
+        ColumnLayout {
+            width: streamUpgradeReview.availableWidth
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: qsTr("Saved settings for %1 can be slow on some Windows PCs. Automatic video looks for hardware decoding. You can also test your displays or keep your settings.").arg(streamUpgradeReview.hostName)
+            }
+            Button {
+                id: automaticVideoButton
+                Layout.fillWidth: true
+                text: qsTr("Use automatic video once")
+                highlighted: true
+                onClicked: {
+                    streamUpgradeReview.close()
+                    RemoteBroker.connectWithAutomaticVideo(streamUpgradeReview.hostId)
+                }
+            }
+            Button {
+                Layout.fillWidth: true
+                text: qsTr("Run benchmark")
+                onClicked: {
+                    RemoteBroker.finishStreamUpgradeReview(streamUpgradeReview.hostId)
+                    benchmarkStart.hostId = streamUpgradeReview.hostId
+                    streamUpgradeReview.close()
+                    benchmarkStart.open()
+                }
+            }
+            Button {
+                Layout.fillWidth: true
+                text: qsTr("Keep my settings")
+                onClicked: {
+                    RemoteBroker.finishStreamUpgradeReview(streamUpgradeReview.hostId)
+                    streamUpgradeReview.close()
+                    RemoteBroker.connectToHost(streamUpgradeReview.hostId)
+                }
             }
         }
     }

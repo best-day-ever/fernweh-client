@@ -150,7 +150,8 @@ public:
     QStringList plankSessionClientDisplays;
     QString plankSessionTargetDisplay;
     QString plankSessionDisplayNotice;
-    bool plankAutomaticVideoProfile = false; // Built-in broker settings only.
+    bool plankAutomaticVideoProfile = false;
+    bool plankAutomaticVideoOnRelay = false;
     bool plankSavedBenchmarkChoice = false; // Explicitly accepted for this route and setup.
     QJsonObject plankBenchmarkRecommendation; // Advisory until exact decoder and geometry checks pass.
 
