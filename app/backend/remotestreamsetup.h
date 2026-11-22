@@ -8,13 +8,14 @@
 // built-in default at the bottom. Header-only so the broker test suite can
 // exercise it without the GUI.
 //
-// Nothing here substitutes a profile silently: resolve() only picks which
-// layer applies, and problemFor() reports a choice the workstation cannot
-// use so the caller can ask the user instead of launching something else.
+// resolve() picks the settings layer. Automatic video uses the built-in
+// Linux setting. A connection can opt into it without changing saved choices.
 
 #include "settings/streamingpreferences.h"
 
 #include <QCoreApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -374,6 +375,66 @@ inline Resolution resolve(const Setup& host, const Setup* seed, const Setup& def
     return result;
 }
 
+inline QString setupKey(const Resolution& resolution)
+{
+    const auto& setup = resolution.setup;
+    QStringList fields {QString::number(resolution.source), QString::number(setup.captureSource),
+                        QString::number(setup.videoProfile)};
+    for (int bitrate : setup.officeBitratesKbps) fields.append(QString::number(bitrate));
+    for (int bitrate : setup.internetBitratesKbps) fields.append(QString::number(bitrate));
+    return fields.join(QLatin1Char('/'));
+}
+
+inline QString benchmarkGroup(const QString& hostId)
+{
+    return hostGroup(hostId) + QStringLiteral("/stream-benchmark/");
+}
+
+inline bool benchmarkReviewPending(QSettings& settings, const QString& hostId, const Resolution& resolution)
+{
+    return resolution.source != FromBuiltIn &&
+            !settings.value(benchmarkGroup(hostId) + QStringLiteral("reviewed-v1"), false).toBool();
+}
+
+inline void finishBenchmarkReview(QSettings& settings, const QString& hostId)
+{
+    settings.setValue(benchmarkGroup(hostId) + QStringLiteral("reviewed-v1"), true);
+}
+
+inline QString benchmarkChoiceKey(const QString& hostId, Route route)
+{
+    return benchmarkGroup(hostId) + (route == OfficeNetwork ? QStringLiteral("direct") : QStringLiteral("relay"));
+}
+
+inline bool hasBenchmarkChoice(QSettings& settings, const QString& hostId)
+{
+    return settings.contains(benchmarkChoiceKey(hostId, OfficeNetwork)) ||
+            settings.contains(benchmarkChoiceKey(hostId, Internet));
+}
+
+inline void clearBenchmarkChoices(QSettings& settings, const QString& hostId)
+{
+    settings.remove(benchmarkChoiceKey(hostId, OfficeNetwork));
+    settings.remove(benchmarkChoiceKey(hostId, Internet));
+}
+
+inline void saveBenchmarkChoice(QSettings& settings, const QString& hostId, Route route,
+                                const QString& context, const QString& manual, const QJsonObject& mode)
+{
+    settings.setValue(benchmarkChoiceKey(hostId, route), QJsonDocument(QJsonObject{
+        {QStringLiteral("context"), context}, {QStringLiteral("manual"), manual}, {QStringLiteral("mode"), mode}
+    }).toJson(QJsonDocument::Compact));
+}
+
+inline QJsonObject loadBenchmarkChoice(QSettings& settings, const QString& hostId, Route route,
+                                       const QString& context, const QString& manual)
+{
+    const auto saved = QJsonDocument::fromJson(settings.value(benchmarkChoiceKey(hostId, route)).toByteArray()).object();
+    if (context.isEmpty() || saved.value("context").toString() != context ||
+            saved.value("manual").toString() != manual) return {};
+    return saved.value("mode").toObject();
+}
+
 inline QString profileName(int profile)
 {
     switch (profile) {
@@ -431,6 +492,28 @@ inline QString problemFor(int captureSource, int profile, const Capabilities& ca
 inline QString problemFor(const Setup& setup, const Capabilities& caps)
 {
     return problemFor(setup.captureSource, setup.videoProfile, caps);
+}
+
+inline QVector<int> automaticNvencProfiles(const Capabilities& caps, Route route = OfficeNetwork)
+{
+    using P = StreamingPreferences;
+    QVector<int> profiles;
+    if (caps.platform != LinuxPlatform || caps.encodingModes.isEmpty()) {
+        return profiles;
+    }
+    const QVector<int> candidates = route == Internet ?
+                QVector<int>{P::PLANK_PROFILE_NVENC_HEVC_10BIT_420, P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                             P::PLANK_PROFILE_NVENC_HEVC_10BIT_444, P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                             P::PLANK_PROFILE_NVENC_H264_8BIT_444} :
+                QVector<int>{P::PLANK_PROFILE_NVENC_HEVC_10BIT_444, P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                             P::PLANK_PROFILE_NVENC_HEVC_10BIT_420, P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                             P::PLANK_PROFILE_NVENC_H264_8BIT_444};
+    for (const int profile : candidates) {
+        if (problemFor(P::PLANK_CAPTURE_NVFBC_8BIT, profile, caps).isEmpty()) {
+            profiles.append(profile);
+        }
+    }
+    return profiles;
 }
 
 }

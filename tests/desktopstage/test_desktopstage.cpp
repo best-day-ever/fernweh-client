@@ -51,6 +51,17 @@ private slots:
         }
     }
 
+    void initialLaunchWaitsOnlyForExplicitActiveDesktopResponse()
+    {
+        constexpr auto active = "PLANK workstation session is active";
+        QVERIFY(PlankReconnectPolicy::activeDesktopResponse(409, active));
+        QVERIFY(!PlankReconnectPolicy::activeDesktopResponse(409, "Host output topology changed; refresh and retry"));
+        QVERIFY(!PlankReconnectPolicy::activeDesktopResponse(409, ""));
+        for (int status : {401, 403, 423, 425, 503}) {
+            QVERIFY(!PlankReconnectPolicy::activeDesktopResponse(status, active));
+        }
+    }
+
     void sdlHandoffAdmissionCanContinuePastTheNotice()
     {
         PlankReconnectPolicy policy;

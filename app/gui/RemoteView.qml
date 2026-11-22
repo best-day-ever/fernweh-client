@@ -27,7 +27,7 @@ Item {
     Timer {
         interval: 5000
         repeat: true
-        running: remoteView.visible && RemoteBroker.signedIn
+        running: remoteView.visible && RemoteBroker.signedIn && !RemoteBroker.streamBenchmarkRunning
         onTriggered: RemoteBroker.refreshHostsQuietly()
     }
     readonly property bool passkeyReady: !usePassword &&
@@ -41,7 +41,7 @@ Item {
         var prefill = Onboarding.takeSignInUsername()
         usernameField.prefill(prefill)
         if (RemoteBroker.signedIn) {
-            RemoteBroker.refreshHosts()
+            if (!RemoteBroker.streamBenchmarkRunning) RemoteBroker.refreshHosts()
         } else if (prefill !== "") {
             if (remoteView.passkeyReady) {
                 usernameField.forceActiveFocus()
@@ -74,9 +74,21 @@ Item {
             var segue = component.createObject(stackView, {
                                                    "appName": hostName,
                                                    "session": session,
+                                                   "benchmark": RemoteBroker.streamBenchmarkRunning,
                                                    "isResume": false
                                                })
             stackView.push(segue)
+        }
+        function onStreamBenchmarkFinished(runs, message, canSave) {
+            benchmarkResults.runs = runs
+            benchmarkResults.message = message
+            benchmarkResults.canSave = canSave
+            benchmarkResults.open()
+        }
+        function onStreamUpgradeReviewRequired(hostId, hostName) {
+            streamUpgradeReview.hostId = hostId
+            streamUpgradeReview.hostName = hostName
+            streamUpgradeReview.open()
         }
         function onDisplaySetupRequired(hostId, hostName, reason) {
             // Start with the applicable basic editor; Advanced is an explicit choice.
@@ -144,6 +156,173 @@ Item {
                     highlighted: true
                     enabled: !RemoteBroker.touchIdSetupBusy
                     onClicked: RemoteBroker.setUpTouchIdAfterSignIn()
+                }
+            }
+        }
+    }
+
+    NavigableDialog {
+        id: streamUpgradeReview
+        property string hostId
+        property string hostName
+        title: qsTr("Review streaming settings")
+        width: Math.min(460, remoteView.width - 40)
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        onOpened: automaticVideoButton.forceActiveFocus()
+
+        ColumnLayout {
+            width: streamUpgradeReview.availableWidth
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: qsTr("Saved settings for %1 can be slow on some Windows PCs. Automatic video looks for hardware decoding. You can also test your displays or keep your settings.").arg(streamUpgradeReview.hostName)
+            }
+            Button {
+                id: automaticVideoButton
+                Layout.fillWidth: true
+                text: qsTr("Use automatic video once")
+                highlighted: true
+                onClicked: {
+                    streamUpgradeReview.close()
+                    RemoteBroker.connectWithAutomaticVideo(streamUpgradeReview.hostId)
+                }
+            }
+            Button {
+                Layout.fillWidth: true
+                text: qsTr("Run benchmark")
+                onClicked: {
+                    RemoteBroker.finishStreamUpgradeReview(streamUpgradeReview.hostId)
+                    benchmarkStart.hostId = streamUpgradeReview.hostId
+                    streamUpgradeReview.close()
+                    benchmarkStart.open()
+                }
+            }
+            Button {
+                Layout.fillWidth: true
+                text: qsTr("Keep my settings")
+                onClicked: {
+                    RemoteBroker.finishStreamUpgradeReview(streamUpgradeReview.hostId)
+                    streamUpgradeReview.close()
+                    RemoteBroker.connectToHost(streamUpgradeReview.hostId)
+                }
+            }
+        }
+    }
+
+    NavigableDialog {
+        id: benchmarkStart
+        property string hostId
+        title: qsTr("Test connection and displays")
+        width: Math.min(500, remoteView.width - 40)
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onAccepted: RemoteBroker.startStreamBenchmark(hostId)
+        Label {
+            width: parent.width
+            text: qsTr("Start continuous motion on the signed-in workstation before testing. Fernweh will preview its supported hardware codecs one at a time using your selected displays. End the stream to stop the test.")
+            wrapMode: Text.Wrap
+        }
+    }
+
+    NavigableDialog {
+        id: benchmarkResults
+        property var runs: []
+        property string message
+        property bool canSave: false
+        title: qsTr("Connection test results")
+        width: Math.min(630, remoteView.width - 40)
+        height: Math.min(implicitHeight, remoteView.height - 20)
+        modal: true
+        standardButtons: canSave ? Dialog.Ok | Dialog.Close : Dialog.Close
+        onOpened: {
+            if (canSave) standardButton(Dialog.Ok).text = qsTr("Use recommended settings")
+        }
+        onAccepted: {
+            if (canSave && !RemoteBroker.acceptStreamBenchmarkRecommendation())
+                remoteView.errorText = qsTr("Fernweh could not save this recommendation. Your stream settings are still available.")
+        }
+
+        ScrollView {
+            anchors.fill: parent
+            contentWidth: availableWidth
+            clip: true
+            ColumnLayout {
+                width: parent.width
+                spacing: 12
+                Label {
+                    Layout.fillWidth: true
+                    text: benchmarkResults.message
+                    wrapMode: Text.Wrap
+                }
+                Repeater {
+                    model: benchmarkResults.runs
+                    delegate: ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+                        Label {
+                            Layout.fillWidth: true
+                            font.bold: true
+                            text: modelData.recommended ? qsTr("%1 (recommended)").arg(modelData.profile) : modelData.profile
+                            wrapMode: Text.Wrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: qsTr("%1 × %2 at %3 fps · %4 · %5 · %6 Mbps target")
+                                  .arg(modelData.width).arg(modelData.height).arg(modelData.target)
+                                  .arg(modelData.route)
+                                  .arg(!modelData.decodeObserved ? qsTr("Decode unavailable") :
+                                       modelData.hardware ? qsTr("Hardware decode") : qsTr("Software or mixed decode"))
+                                  .arg((modelData.kbps / 1000).toFixed(1))
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: qsTr("%1 received, %2 decoded, %3 presented fps · %4 video Mbps · %5 missing frames")
+                                  .arg(modelData.received.toFixed(1)).arg(modelData.decoded.toFixed(1))
+                                  .arg(modelData.presented.toFixed(1)).arg(modelData.mbps.toFixed(1))
+                                  .arg(modelData.missing)
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            visible: modelData.timedOut
+                            text: qsTr("The preview timed out before it finished measuring.")
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            visible: modelData.lowestPresented >= 0 && modelData.lowestPresented < modelData.presentationFloor
+                            text: qsTr("Lowest presentation sample %1 fps · %2 fps required")
+                                  .arg(modelData.lowestPresented.toFixed(1)).arg(modelData.presentationFloor.toFixed(1))
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: modelData.exercised ?
+                                      qsTr("%1 fps from fresh desktop captures · %2 of %3 s with motion")
+                                          .arg(modelData.freshCaptureFps.toFixed(1))
+                                          .arg(modelData.motionSeconds.toFixed(1)).arg(modelData.seconds.toFixed(1)) :
+                                      qsTr("Too little sustained motion or traffic · %1 of %2 s with motion")
+                                          .arg(modelData.motionSeconds.toFixed(1)).arg(modelData.seconds.toFixed(1))
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: qsTr("Mean decode %1 · render %2 · RTT %3")
+                                  .arg(modelData.decodeMs < 0 ? qsTr("unavailable") : qsTr("%1 ms").arg(modelData.decodeMs.toFixed(1)))
+                                  .arg(modelData.renderMs < 0 ? qsTr("unavailable") : qsTr("%1 ms").arg(modelData.renderMs.toFixed(1)))
+                                  .arg(modelData.rtt < 0 ? qsTr("unavailable") : qsTr("%1 ms").arg(modelData.rtt.toFixed(0)))
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            visible: modelData.fecBefore >= 0
+                            text: qsTr("Video symbol loss %1% before correction · %2% after correction")
+                                  .arg(modelData.fecBefore.toFixed(2)).arg(modelData.fecAfter.toFixed(2))
+                        }
+                    }
                 }
             }
         }
@@ -282,6 +461,14 @@ Item {
                 text: qsTr("Stream quality")
                 font.bold: true
                 font.pointSize: 13
+            }
+            Button {
+                visible: displaySetupDialog.stream.hasBenchmarkChoice === true
+                text: qsTr("Clear saved benchmark recommendation")
+                onClicked: {
+                    RemoteBroker.clearStreamBenchmarkRecommendation(displaySetupDialog.hostId)
+                    displaySetupDialog.loadStream()
+                }
             }
             Label {
                 Layout.fillWidth: true
@@ -653,8 +840,12 @@ Item {
                 width: hostList.width
                 host: modelData
                 statusText: remoteView.hostStatusText(modelData)
-                busy: RemoteBroker.busy
+                busy: RemoteBroker.busy || RemoteBroker.streamBenchmarkRunning
                 onSettingsRequested: displaySetupDialog.openFor(modelData.id, modelData.name, false, "")
+                onBenchmarkRequested: {
+                    benchmarkStart.hostId = modelData.id
+                    benchmarkStart.open()
+                }
                 onConnectRequested: {
                     remoteView.errorText = ""
                     RemoteBroker.connectToHost(modelData.id)

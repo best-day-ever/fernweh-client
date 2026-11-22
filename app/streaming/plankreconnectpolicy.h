@@ -4,12 +4,20 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 
 // The frontend chooses bounded or continuous recovery. Individual operations
 // retain their HTTP timeout, cancellation and terminal authentication checks.
 class PlankReconnectPolicy
 {
 public:
+    static constexpr int PreviousTransportGraceMs = 12000;
+
+    static bool activeDesktopResponse(int status, std::string_view message)
+    {
+        return status == 409 && message == "PLANK workstation session is active";
+    }
+
     // A greeter handoff deliberately stops the old Host worker. Give the new
     // worker and its first authenticated launch time before auto-disconnecting.
     // Ask mode still reports a delay at the user's configured time.

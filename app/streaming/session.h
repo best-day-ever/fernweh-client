@@ -155,7 +155,9 @@ public:
     virtual ~Session();
 
     Q_INVOKABLE void exec(QWindow* qtWindow);
-    void publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder);
+    void publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder, quint32 elapsedMs);
+    void enableStreamBenchmark() { m_MeasureStreamBenchmark = true; }
+    bool endStreamBenchmark();
     void publishPenMetrics(const PlankPenActivity& activity);
     static QString decoderFailureMessage(int videoFormat);
 
@@ -268,6 +270,7 @@ signals:
     void connectionStarted();
     void diagnosticConnectionLost(int code);
     void diagnosticStreamParameters(QJsonObject parameters);
+    void streamBenchmarkSample(QJsonObject sample);
     void diagnosticLifecycle(QJsonObject lifecycle, bool final);
 
     void sessionCleanupWaitChanged(bool waiting, QString text);
@@ -295,6 +298,7 @@ private:
     std::atomic_bool m_ApplicationExitRequested{false};
 #endif
     SessionDiagnostics m_Diagnostics;
+    bool m_MeasureStreamBenchmark = false;
     void diagnosticPhase(SessionDiagnostics::Phase phase);
     void publishDiagnosticLifecycle(bool final = false);
     void execInternal();
@@ -350,6 +354,7 @@ private:
     bool negotiatePlankTransportSession(quint16 sessionPort, QString& errorMessage);
 
     void stopPlankTransportDataPlane();
+    void queuePlankTransportDisconnect();
 
 #ifdef PLANK_TRANSPORT
     void startPlankTransportMediaReceivers();
@@ -381,11 +386,17 @@ private:
 #endif
 #endif
 
-    bool validateLaunch(SDL_Window* testWindow = nullptr);
+    struct DecoderProbe {
+        int capabilities;
+        int colorSpace;
+        int colorRange;
+    };
+
+    bool validateLaunch(SDL_Window* testWindow, std::optional<DecoderProbe>& probe);
 
     void emitLaunchWarning(QString text);
 
-    bool populateDecoderProperties(SDL_Window* testWindow = nullptr);
+    void populateDecoderProperties(const DecoderProbe& probe);
 
     IAudioRenderer* createAudioRenderer(const POPUS_MULTISTREAM_CONFIGURATION opusConfig);
 
@@ -456,16 +467,6 @@ private:
 
     void updateOptimalWindowDisplayMode();
 
-    enum class DecoderAvailability {
-        None,
-        Software,
-        Hardware
-    };
-
-    DecoderAvailability getDecoderAvailability(int videoFormat, int width, int height, int frameRate,
-                                               bool enableIdentityGbr = false,
-                                               SDL_Window* testWindow = nullptr);
-
     static
     bool chooseDecoder(int videoFormat, int width, int height,
                        int frameRate, bool enableVsync, bool testOnly,
@@ -482,6 +483,7 @@ private:
                            DecoderSelectionMode::PreferExactHardwareThenSoftware);
 
     bool isIdentityGbrEnabledForFormat(int videoFormat) const;
+    bool selectAutomaticVideoProfile(SDL_Window* testWindow, std::optional<DecoderProbe>& probe);
     DecoderCaptureSource decoderCaptureSource() const;
     DecoderEncoderBackend decoderEncoderBackend() const;
 
@@ -570,6 +572,7 @@ private:
     StreamingPreferences::PlankCaptureSource m_PlankCaptureSource;
 #ifdef PLANK_TRANSPORT
     PlankTransportNativeEndpoint* m_PlankTransportEndpoint = nullptr;
+    bool m_PlankDisconnectQueued = false;
     std::atomic_bool m_PlankTransportReceiversStopping {false};
     std::thread m_PlankTransportVideoThread;
     std::thread m_PlankTransportAudioThread;

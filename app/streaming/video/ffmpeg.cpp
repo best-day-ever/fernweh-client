@@ -1032,7 +1032,8 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
     // Flip stats windows roughly every second
     if (PlankClock::milliseconds() >= m_ActiveWndVideoStats.measurementStartTimestamp + 1000) {
         m_BackendRenderer->collectPresentationStats(m_ActiveWndVideoStats);
-        Session::get()->publishVideoMetrics(m_ActiveWndVideoStats, isHardwareAccelerated());
+        Session::get()->publishVideoMetrics(m_ActiveWndVideoStats, isHardwareAccelerated(),
+                                            PlankClock::milliseconds() - m_ActiveWndVideoStats.measurementStartTimestamp);
         VIDEO_STATS lastTwoWndStats = {};
         addVideoStats(m_LastWndVideoStats, lastTwoWndStats);
         addVideoStats(m_ActiveWndVideoStats, lastTwoWndStats);

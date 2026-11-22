@@ -10,6 +10,7 @@ Rectangle {
     readonly property var people: host.connectedUsers || []
     signal settingsRequested()
     signal connectRequested()
+    signal benchmarkRequested()
     implicitHeight: Math.max(68, content.implicitHeight + 24)
     height: implicitHeight
     radius: theme.radiusMedium
@@ -63,7 +64,15 @@ Rectangle {
             }
         }
         Button {
+            text: qsTr("Test connection…")
+            Accessible.name: qsTr("Test connection to %1").arg(card.host.name)
+            flat: true
+            enabled: card.host.connectable && !card.busy
+            onClicked: card.benchmarkRequested()
+        }
+        Button {
             text: qsTr("Settings…")
+            Accessible.name: qsTr("Settings for %1").arg(card.host.name)
             flat: true
             enabled: !card.busy
             onClicked: card.settingsRequested()
@@ -71,6 +80,7 @@ Rectangle {
         Button {
             objectName: "connectButton"
             text: qsTr("Connect")
+            Accessible.name: qsTr("Connect to %1").arg(card.host.name)
             highlighted: card.host.connectable
             enabled: card.host.connectable && !card.busy
             onClicked: card.connectRequested()

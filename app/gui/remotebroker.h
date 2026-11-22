@@ -5,7 +5,9 @@
 #include "backend/plankbrokerclient.h"
 #include "backend/plankpasskey.h"
 #include "backend/remotestreamsetup.h"
+#include "backend/streambenchmark.h"
 
+#include <QHash>
 #include <QMutex>
 #include <QObject>
 #include <QPointer>
@@ -40,6 +42,7 @@ class RemoteBroker : public QObject
     Q_PROPERTY(QString rememberedUsername READ rememberedUsername NOTIFY stateChanged)
     Q_PROPERTY(QString sessionNotice READ sessionNotice NOTIFY stateChanged)
     Q_PROPERTY(QVariantList hosts READ hosts NOTIFY hostsChanged)
+    Q_PROPERTY(bool streamBenchmarkRunning READ streamBenchmarkRunning NOTIFY stateChanged)
     // Touch ID sign-in: helper present (macOS), local keys for the
     // configured relying party ({username, credentialId, mapping, created}),
     // and the user names that have one.
@@ -75,6 +78,12 @@ public:
     // the stream settings cannot work on the workstation it emits
     // streamSetupRequired instead of streaming with something else.
     Q_INVOKABLE void connectToHost(const QString& hostId);
+    Q_INVOKABLE void connectWithAutomaticVideo(const QString& hostId);
+    Q_INVOKABLE void startStreamBenchmark(const QString& hostId);
+    Q_INVOKABLE void finishStreamUpgradeReview(const QString& hostId);
+    Q_INVOKABLE bool acceptStreamBenchmarkRecommendation();
+    Q_INVOKABLE void clearStreamBenchmarkRecommendation(const QString& hostId);
+    bool streamBenchmarkRunning() const { return !m_Benchmark.hostId.isEmpty(); }
     // Per-workstation display setup kept in the Client's local settings.
     // Keys: configured, layoutChoice, virtualMode1, virtualMode2, scalingChoice,
     // canMatchClient, matchClientReason, matchClientSummary, matchClientFitted,
@@ -149,6 +158,8 @@ signals:
     // Generic, user-facing message (never broker- or host-supplied text).
     void errorOccurred(QString message);
     void connectReady(QString hostName);
+    void streamBenchmarkFinished(QVariantList runs, QString message, bool canSave);
+    void streamUpgradeReviewRequired(QString hostId, QString hostName);
     void displaySetupRequired(QString hostId, QString hostName, QString reason);
     // The saved (or default) stream settings do not fit the workstation;
     // reason is user-facing.
@@ -185,6 +196,35 @@ private:
     void sendKeepalive();
     void sendPresence(bool connected);
     void configureDiagnostics();
+    void connectToHostImpl(const QString& hostId, int benchmarkProfile, bool useAutomaticVideo = false);
+    void attachStreamBenchmark(Session* session, const QString& comparisonKey);
+    void advanceStreamBenchmark();
+    void finishStreamBenchmark(const QString& reason = QString());
+
+    struct Benchmark {
+        QString hostId;
+        QVector<int> pending;
+        QVector<StreamBenchmark::Run> runs;
+        StreamBenchmark::Run current;
+        QString comparisonKey;
+        QString manualSettings;
+        QString failure;
+        int warmup = 0;
+        bool complete = false;
+    };
+    Benchmark m_Benchmark;
+    struct BenchmarkOffer {
+        QString hostId;
+        QString context;
+        QString manualSettings;
+        QJsonObject mode;
+    };
+    BenchmarkOffer m_BenchmarkOffer;
+    struct BenchmarkRecommendation {
+        QJsonObject mode;
+        qint64 expires = 0;
+    };
+    QHash<QString, BenchmarkRecommendation> m_BenchmarkRecommendations;
 
     BetaDiagnostics* m_Diagnostics;
     QTimer m_DiagnosticSampleTimer;

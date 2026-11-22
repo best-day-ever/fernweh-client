@@ -14,6 +14,7 @@
 #include "displayprofile.h"
 #include "clientdisplayprobe.h"
 #include "remotestreamsetup.h"
+#include "streambenchmark.h"
 #include "brokersessionstore.h"
 #include "brokersessionstate.h"
 #include <QTemporaryDir>
@@ -436,8 +437,11 @@ private slots:
     void remoteStreamSetupRejectsInvalidEntries();
     void remoteStreamSetupPicksBitrateForRoute();
     void remoteStreamSetupLayersDefaults();
+    void benchmarkChoicePreservesAndTracksSavedSettings();
     void remoteStreamSetupSeedsOnlyFromExactBookmark();
     void remoteStreamSetupReportsUnusableChoice();
+    void remoteStreamSetupRanksAdvertisedNvencProfiles();
+    void streamBenchmarkRequiresSustainedHardwarePresentation();
     void remoteStreamSetupCachesCapabilities();
     void remoteStreamSetupCachesDisplayCapabilities();
 };
@@ -4113,6 +4117,54 @@ void TestPlankBroker::remoteStreamSetupLayersDefaults()
     QVERIFY(!RemoteStreamSetup::saveDefaults(settings, customStream(StreamingPreferences::PLANK_CAPTURE_NVFBC_8BIT, 99)));
 }
 
+void TestPlankBroker::benchmarkChoicePreservesAndTracksSavedSettings()
+{
+    using namespace RemoteStreamSetup;
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("client.ini"));
+    const QString hostId = QStringLiteral("workstation.example.test");
+    const QString otherHost = QStringLiteral("other.example.test");
+    const QString relayContext = QStringLiteral("workstation/screens/graphics/relay");
+    const int legacy = StreamingPreferences::PLANK_PROFILE_NVENC_H264_8BIT_444;
+    auto manuallySaved = customStream(StreamingPreferences::PLANK_CAPTURE_NVFBC_8BIT, legacy);
+    manuallySaved.internetBitratesKbps[legacy] = 80000;
+    const QJsonObject choice{{"profile", StreamingPreferences::PLANK_PROFILE_NVENC_HEVC_10BIT_420},
+                             {"bitrate_kbps", 30000}, {"width", 3840}, {"height", 2160}, {"fps", 60}};
+
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        QVERIFY(!benchmarkReviewPending(settings, hostId, Resolution{}));
+        QVERIFY(saveDefaults(settings, manuallySaved));
+        const auto effective = resolve({}, nullptr, loadDefaults(settings), LinuxPlatform);
+        QVERIFY(benchmarkReviewPending(settings, hostId, effective));
+        finishBenchmarkReview(settings, hostId);
+        QVERIFY(!hasBenchmarkChoice(settings, hostId));
+        QVERIFY(!benchmarkReviewPending(settings, hostId, effective));
+        QCOMPARE(bitrateFor(loadDefaults(settings), Internet), 80000);
+        saveBenchmarkChoice(settings, hostId, Internet, relayContext, setupKey(effective), choice);
+        settings.sync();
+        QCOMPARE(settings.status(), QSettings::NoError);
+    }
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        auto effective = resolve({}, nullptr, loadDefaults(settings), LinuxPlatform);
+        QCOMPARE(effective.setup.videoProfile, legacy);
+        QVERIFY(!benchmarkReviewPending(settings, hostId, effective));
+        QVERIFY(benchmarkReviewPending(settings, otherHost, effective));
+        QVERIFY(hasBenchmarkChoice(settings, hostId));
+        QCOMPARE(loadBenchmarkChoice(settings, hostId, Internet, relayContext, setupKey(effective)), choice);
+        QVERIFY(loadBenchmarkChoice(settings, hostId, OfficeNetwork, relayContext, setupKey(effective)).isEmpty());
+        QVERIFY(loadBenchmarkChoice(settings, otherHost, Internet, relayContext, setupKey(effective)).isEmpty());
+        QVERIFY(loadBenchmarkChoice(settings, hostId, Internet, QStringLiteral("changed-displays"),
+                                    setupKey(effective)).isEmpty());
+        effective.setup.internetBitratesKbps[legacy] = 60000;
+        QVERIFY(loadBenchmarkChoice(settings, hostId, Internet, relayContext, setupKey(effective)).isEmpty());
+        clearBenchmarkChoices(settings, hostId);
+        QVERIFY(!hasBenchmarkChoice(settings, hostId));
+        QCOMPARE(bitrateFor(loadDefaults(settings), Internet), 80000);
+    }
+}
+
 void TestPlankBroker::remoteStreamSetupSeedsOnlyFromExactBookmark()
 {
     auto bookmark = [](const QString& name, const QString& address, int profile) {
@@ -4227,10 +4279,87 @@ void TestPlankBroker::remoteStreamSetupReportsUnusableChoice()
     QCOMPARE(r.source, RemoteStreamSetup::FromHost);
     QCOMPARE(r.setup.videoProfile, hevc10);
     QVERIFY(!RemoteStreamSetup::problemFor(r.setup, noHevc10Fbc).isEmpty());
-    // The built-in default is reported too rather than swapped for another.
-    const RemoteStreamSetup::Resolution builtIn = RemoteStreamSetup::resolve(
-                RemoteStreamSetup::Setup(), nullptr, RemoteStreamSetup::Setup(), RemoteStreamSetup::LinuxPlatform);
-    QVERIFY(!RemoteStreamSetup::problemFor(builtIn.setup, noHevc10Fbc).isEmpty());
+}
+
+void TestPlankBroker::streamBenchmarkRequiresSustainedHardwarePresentation()
+{
+    const auto measured = [](bool hardware, int frames, int motionWindows = 12, int freshCaptures = 59) {
+        StreamBenchmark::Run run;
+        run.mode = {{"width", 3840}, {"height", 2160}, {"fps", 60}, {"route", "relay"},
+                    {"bitrate_kbps", 30000}};
+        for (int i = 0; i < 12; ++i) {
+            run.add({{"seconds", 1}, {"received", 60}, {"decoded", frames},
+                     {"presented", frames}, {"hardware", hardware},
+                     {"freshCaptures", freshCaptures}, {"bytes", i < motionWindows ? 1500000 : 20000}});
+        }
+        return run;
+    };
+    const auto software = measured(false, 60);
+    const auto laggy = measured(true, 45);
+    const auto good = measured(true, 59);
+    const auto staticDesktop = measured(true, 59, 12, 0);
+    QVERIFY(!staticDesktop.meetsTarget());
+    const auto lightDesktop = measured(true, 59, 0);
+    QVERIFY(!lightDesktop.meetsTarget());
+    QCOMPARE(StreamBenchmark::recommend({staticDesktop, lightDesktop}), -1);
+    const auto burst = measured(true, 59, 2);
+    QVERIFY(burst.videoMbps() > 1.5);
+    QCOMPARE(burst.motionSeconds, 2.0);
+    QCOMPARE(StreamBenchmark::recommend({burst}), -1);
+    const auto briefPause = measured(true, 59, 10);
+    QCOMPARE(briefPause.motionSeconds, 10.0);
+    QCOMPARE(StreamBenchmark::recommend({briefPause}), 0);
+    QCOMPARE(StreamBenchmark::recommend({measured(true, 59, 9)}), -1);
+    auto stalled = good;
+    stalled.add({{"seconds", 1}, {"received", 60}, {"presented", 46}, {"hardware", true},
+                 {"freshCaptures", 59}, {"bytes", 1500000}});
+    QVERIFY(stalled.exercisedWorkload());
+    QVERIFY(stalled.presentedFps() >= 57);
+    QCOMPARE(stalled.worstPresentedFps, 46.0);
+    QVERIFY(!stalled.meetsTarget());
+    QCOMPARE(StreamBenchmark::recommend({software, laggy, good}), 2);
+    QCOMPARE(StreamBenchmark::recommend({software, laggy, stalled}), -1);
+    auto timedOut = good;
+    timedOut.timedOut = true;
+    QVERIFY(!timedOut.meetsTarget());
+    QCOMPARE(StreamBenchmark::recommend({timedOut, good, timedOut}), 1);
+    auto direct = good;
+    direct.mode["route"] = "direct";
+    QCOMPARE(StreamBenchmark::recommend({direct, good}), -1);
+    auto otherDisplay = good;
+    otherDisplay.mode["width"] = 1920;
+    QCOMPARE(StreamBenchmark::recommend({otherDisplay, good}), -1);
+}
+
+void TestPlankBroker::remoteStreamSetupRanksAdvertisedNvencProfiles()
+{
+    using P = StreamingPreferences;
+    const QStringList modes{QStringLiteral("h264-8-444-nvenc"), QStringLiteral("hevc-10-420-nvenc"),
+                            QStringLiteral("hevc-10-444-nvenc"), QStringLiteral("h264-8-420-nvenc"),
+                            QStringLiteral("hevc-8-444-nvenc"), QStringLiteral("h264-10-444-software")};
+    const auto full = linuxHost(RemoteStreamSetup::NvfbcHevc10NvencFeature |
+                                RemoteStreamSetup::NvfbcNvenc420Feature, modes);
+    const QVector<int> expected{P::PLANK_PROFILE_NVENC_HEVC_10BIT_444,
+                                P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                                P::PLANK_PROFILE_NVENC_HEVC_10BIT_420,
+                                P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                                P::PLANK_PROFILE_NVENC_H264_8BIT_444};
+    QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(full), expected);
+    const QVector<int> relay{P::PLANK_PROFILE_NVENC_HEVC_10BIT_420,
+                             P::PLANK_PROFILE_NVENC_H264_8BIT_420,
+                             P::PLANK_PROFILE_NVENC_HEVC_10BIT_444,
+                             P::PLANK_PROFILE_NVENC_HEVC_8BIT_444,
+                             P::PLANK_PROFILE_NVENC_H264_8BIT_444};
+    QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(full, RemoteStreamSetup::Internet), relay);
+
+    const QVector<int> older{P::PLANK_PROFILE_NVENC_HEVC_8BIT_444, P::PLANK_PROFILE_NVENC_H264_8BIT_444};
+    QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(linuxHost(0, modes)), older);
+    QCOMPARE(RemoteStreamSetup::automaticNvencProfiles(linuxHost(0, modes), RemoteStreamSetup::Internet), older);
+    QVERIFY(RemoteStreamSetup::automaticNvencProfiles(linuxHost(full.featureFlags, {})).isEmpty());
+    QVERIFY(RemoteStreamSetup::automaticNvencProfiles(linuxHost(full.featureFlags, {modes.last()})).isEmpty());
+    auto mac = full;
+    mac.platform = RemoteStreamSetup::MacPlatform;
+    QVERIFY(RemoteStreamSetup::automaticNvencProfiles(mac).isEmpty());
 }
 
 void TestPlankBroker::remoteStreamSetupCachesCapabilities()

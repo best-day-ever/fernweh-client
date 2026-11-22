@@ -362,6 +362,7 @@ HEADERS += \
     backend/brokerdevicekey.h \
     backend/remotedisplaysetup.h \
     backend/remotestreamsetup.h \
+    backend/streambenchmark.h \
     backend/desktopstage.h \
     backend/hostrecovery.h \
     backend/computermanager.h \

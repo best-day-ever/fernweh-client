@@ -6,6 +6,7 @@
 #include "session.h"
 #include "videopipelineprogress.h"
 #include "backend/macsharedsession.h"
+#include "backend/remotestreamsetup.h"
 #include "sessionguidispatch.h"
 #include "backend/collaboration.h"
 #include "planksharinghud.h"
@@ -550,6 +551,77 @@ bool Session::isIdentityGbrEnabledForFormat(int videoFormat) const
            (m_Computer->serverCodecModeSupport & SCM_IDENTITY_GBR_444);
 }
 
+bool Session::selectAutomaticVideoProfile(SDL_Window* testWindow, std::optional<DecoderProbe>& probe)
+{
+    const bool savedChoice = m_Computer->plankSavedBenchmarkChoice;
+    if (!m_Computer->plankAutomaticVideoProfile && !savedChoice) return true;
+
+    RemoteStreamSetup::Capabilities caps;
+    caps.known = true;
+    caps.platform = RemoteStreamSetup::LinuxPlatform;
+    caps.featureFlags = m_PlankLaunchFeatureFlags;
+    caps.encodingModes = m_Computer->plankEncodingModes;
+    const int width = m_StreamConfig.width;
+    const int height = m_StreamConfig.height;
+    const int fps = m_StreamConfig.fps;
+    const auto original = m_PlankVideoProfile;
+    auto profiles = RemoteStreamSetup::automaticNvencProfiles(caps, m_Computer->plankAutomaticVideoOnRelay ?
+                RemoteStreamSetup::Internet : RemoteStreamSetup::OfficeNetwork);
+    const auto& recommended = m_Computer->plankBenchmarkRecommendation;
+    const int preferred = recommended.value("profile").toInt(-1);
+    const int recommendedKbps = recommended.value("bitrate_kbps").toInt();
+    const bool fitsRecommendation = profiles.contains(preferred) &&
+            (!savedChoice || recommended.value("capture").toInt(-1) == m_PlankCaptureSource) &&
+            recommended.value("width").toInt() == width &&
+            recommended.value("height").toInt() == height &&
+            recommended.value("fps").toInt() == fps &&
+            recommendedKbps == StreamingPreferences::plankBitrateForProfile(
+                                   savedChoice ? StreamingPreferences::plankDefaultProfileBitrates() :
+                                                 m_Computer->plankProfileBitratesKbps, preferred);
+    if (savedChoice && fitsRecommendation && !m_Computer->plankAutomaticVideoProfile) {
+        profiles = {preferred};
+    } else if (fitsRecommendation) {
+        profiles.move(profiles.indexOf(preferred), 0);
+    } else if (!m_Computer->plankAutomaticVideoProfile) {
+        return true;
+    }
+    for (const int profile : profiles) {
+        const auto* encoding = plank_encoding_profile(profile);
+        const int format = encoding->video_format;
+        const bool identity = isIdentityGbrEnabledForFormat(format);
+        SupportedVideoFormatList candidate;
+        candidate.append(format);
+        if (!candidate.maskByServerCodecModes(m_Computer->serverCodecModeSupport) ||
+                ((format & VIDEO_FORMAT_MASK_YUV444) && !identity) ||
+                !plank_encoding_explicit_dimensions(encoding, width, height)) {
+            continue;
+        }
+        IVideoDecoder* decoder = nullptr;
+        if (chooseDecoder(format, width, height, fps, false, true, decoder,
+                          identity, decoderCaptureSource(), DecoderEncoderBackend::NvencDirect,
+                          m_RendererFactory, testWindow, false, DecoderSelectionMode::ExactHardwareOnly)) {
+            const DecoderProbe tested {decoder->getDecoderCapabilities(), decoder->getDecoderColorspace(),
+                                       decoder->getDecoderColorRange()};
+            delete decoder;
+            m_PlankVideoProfile = static_cast<StreamingPreferences::PlankVideoProfile>(profile);
+            const bool appliedSavedChoice = savedChoice && fitsRecommendation && preferred == profile;
+            m_PlankBitrateKbps = appliedSavedChoice ? recommendedKbps : StreamingPreferences::plankBitrateForProfile(
+                        m_Computer->plankProfileBitratesKbps, profile);
+            qInfo() << (appliedSavedChoice ? "Saved benchmark video profile:" : "Automatic video profile:")
+                    << encoding->mode << m_PlankBitrateKbps << "kbps (hardware decoder verified)";
+            if (m_PlankVideoProfile != original && !configurePlankLaunchGeometry()) return false;
+            if (width == m_StreamConfig.width && height == m_StreamConfig.height && fps == m_StreamConfig.fps) {
+                probe = tested;
+            }
+            return true;
+        }
+    }
+    qInfo() << "Automatic video profile: keeping"
+            << StreamingPreferences::plankEncodingMode(original)
+            << "(no automatic profile passed hardware validation)";
+    return true;
+}
+
 int Session::drSetup(int videoFormat, int width, int height, int frameRate, void *, int)
 {
     s_ActiveSession->m_ActiveVideoFormat = videoFormat;
@@ -617,26 +689,6 @@ int Session::drSubmitDecodeUnit(PDECODE_UNIT du)
     return s_ActiveSession->m_VideoDecoder->submitDecodeUnit(du);
 }
 
-Session::DecoderAvailability
-Session::getDecoderAvailability(int videoFormat, int width, int height, int frameRate,
-                                bool enableIdentityGbr, SDL_Window* testWindow)
-{
-    IVideoDecoder* decoder;
-
-    if (!chooseDecoder(videoFormat, width, height, frameRate,
-                       false, true, decoder, enableIdentityGbr,
-                       decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory,
-                       testWindow)) {
-        return DecoderAvailability::None;
-    }
-
-    bool hw = decoder->isHardwareAccelerated();
-
-    delete decoder;
-
-    return hw ? DecoderAvailability::Hardware : DecoderAvailability::Software;
-}
-
 DecoderCaptureSource Session::decoderCaptureSource() const
 {
     if (m_PlankCaptureSource == StreamingPreferences::PLANK_CAPTURE_SCREENCAPTUREKIT) {
@@ -655,23 +707,9 @@ DecoderEncoderBackend Session::decoderEncoderBackend() const
                 DecoderEncoderBackend::NvencDirect : DecoderEncoderBackend::SoftwareCuda;
 }
 
-bool Session::populateDecoderProperties(SDL_Window* testWindow)
+void Session::populateDecoderProperties(const DecoderProbe& probe)
 {
-    IVideoDecoder* decoder;
-
-    if (!chooseDecoder(m_SupportedVideoFormats.first(),
-                       m_StreamConfig.width,
-                       m_StreamConfig.height,
-                       m_StreamConfig.fps,
-                       false, true, decoder,
-                       isIdentityGbrEnabledForFormat(m_SupportedVideoFormats.first()),
-                       decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory,
-                       testWindow)) {
-        emit displayLaunchError(decoderFailureMessage(m_SupportedVideoFormats.first()));
-        return false;
-    }
-
-    m_VideoCallbacks.capabilities = decoder->getDecoderCapabilities();
+    m_VideoCallbacks.capabilities = probe.capabilities;
     if (m_VideoCallbacks.capabilities & CAPABILITY_PULL_RENDERER) {
         // It is an error to pass a push callback when in pull mode
         m_VideoCallbacks.submitDecodeUnit = nullptr;
@@ -697,7 +735,7 @@ bool Session::populateDecoderProperties(SDL_Window* testWindow)
                         m_StreamConfig.colorSpace);
         }
         else {
-            m_StreamConfig.colorSpace = decoder->getDecoderColorspace();
+            m_StreamConfig.colorSpace = probe.colorSpace;
         }
 
         m_StreamConfig.colorRange = qEnvironmentVariableIntValue("COLOR_RANGE_OVERRIDE", &ok);
@@ -706,13 +744,9 @@ bool Session::populateDecoderProperties(SDL_Window* testWindow)
                         m_StreamConfig.colorRange);
         }
         else {
-            m_StreamConfig.colorRange = decoder->getDecoderColorRange();
+            m_StreamConfig.colorRange = probe.colorRange;
         }
     }
-
-    delete decoder;
-
-    return true;
 }
 
 Session::Session(NvComputer* computer, NvApp& app,
@@ -912,6 +946,7 @@ bool Session::startPlankTransportDataPlane(quint16 port,
     }
 
     m_PlankTransportEndpoint = endpoint;
+    m_PlankDisconnectQueued = false;
     {
         std::lock_guard<std::mutex> lock(m_MetricsMutex);
         m_MetricsHandle = metrics;
@@ -1170,17 +1205,36 @@ void Session::publishPenMetrics(const PlankPenActivity& activity)
 #endif
 }
 
-void Session::publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder)
+bool Session::endStreamBenchmark()
 {
+    if (!m_MeasureStreamBenchmark || s_ActiveSession != this || m_Lifecycle.stopping()) return false;
+    requestSessionQuit(SessionDiagnostics::End::QuitEvent);
+    return true;
+}
+
+void Session::publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecoder, quint32 elapsedMs)
+{
+    if (!elapsedMs) return;
+    const double seconds = elapsedMs / 1000.0;
+    if (m_MeasureStreamBenchmark) {
+        const auto fec = currentVideoFecLoss();
+        emit streamBenchmarkSample(QJsonObject{
+            {"seconds", seconds}, {"received", qint64(window.receivedFrames)},
+            {"freshCaptures", qint64(window.framesWithHostProcessingLatency)},
+            {"decoded", qint64(window.decodedFrames)}, {"presented", qint64(window.renderedFrames)},
+            {"missing", qint64(window.networkDroppedFrames)}, {"bytes", qint64(window.receivedVideoBytes)},
+            {"decodeMs", double(window.totalDecodeTime)}, {"renderMs", double(window.totalRenderTime)},
+            {"rtt", qint64(currentNetworkRttMs())}, {"hardware", hardwareDecoder},
+            {"fecBefore", double(fec.before)}, {"fecAfter", double(fec.after)}
+        });
+    }
 #ifdef PLANK_TRANSPORT
     std::unique_lock<std::mutex> lock(m_MetricsMutex, std::try_to_lock);
     if (!lock || !m_MetricsHandle) return;
-    const auto elapsed = PlankClock::milliseconds() - window.measurementStartTimestamp;
-    if (!elapsed) return;
     PlankMetricsClientVideo sample {};
     sample.struct_size = sizeof(sample);
     sample.hardware_decoder = hardwareDecoder ? 1 : 0;
-    sample.window_seconds = double(elapsed) / 1000.0;
+    sample.window_seconds = seconds;
     sample.received_frames = window.receivedFrames;
     sample.decoded_frames = window.decodedFrames;
     sample.rendered_frames = window.renderedFrames;
@@ -1194,9 +1248,21 @@ void Session::publishVideoMetrics(const VIDEO_STATS& window, bool hardwareDecode
     sample.host_latency_time_ms = double(window.totalHostProcessingLatency) / 10.0;
     // A busy or retired metrics sink only loses this observation, never video.
     plank_metrics_client_video(m_MetricsHandle, &sample);
-#else
-    Q_UNUSED(window)
-    Q_UNUSED(hardwareDecoder)
+#endif
+}
+
+void Session::queuePlankTransportDisconnect()
+{
+#ifdef PLANK_TRANSPORT
+    if (m_PlankTransportEndpoint == nullptr || m_PlankDisconnectQueued) return;
+    unsigned char packet[PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE];
+    size_t packetSize = 0;
+    if (plank_transport_control_encode(PLANK_TRANSPORT_CONTROL_CLIENT_DISCONNECT, nullptr, 0,
+                                       packet, sizeof(packet), &packetSize) == 0) {
+        const int result = plank_transport_native_data_send(m_PlankTransportEndpoint, packet, packetSize);
+        m_PlankDisconnectQueued = result == PLANK_TRANSPORT_OK;
+        qInfo() << "Native disconnect queue result:" << result;
+    }
 #endif
 }
 
@@ -1208,15 +1274,7 @@ void Session::stopPlankTransportDataPlane()
         plank_metrics_destroy(m_MetricsHandle);
         m_MetricsHandle = nullptr;
     }
-    if (m_PlankTransportEndpoint != nullptr) {
-        unsigned char packet[PLANK_TRANSPORT_CONTROL_MAX_PACKET_SIZE];
-        size_t packetSize = 0;
-        if (plank_transport_control_encode(
-                    PLANK_TRANSPORT_CONTROL_CLIENT_DISCONNECT, nullptr, 0,
-                    packet, sizeof(packet), &packetSize) == 0) {
-            plank_transport_native_data_send(m_PlankTransportEndpoint, packet, packetSize);
-        }
-    }
+    queuePlankTransportDisconnect();
     stopPlankTransportMediaReceivers();
     {
         std::lock_guard<std::mutex> guard(m_MicrophoneMutex);
@@ -2066,6 +2124,10 @@ bool Session::initialize(IFFmpegRendererFactory* presenter)
     m_StreamConfig.fps = (m_Computer->plankAuthentication ||
                           m_PlankCaptureSource == StreamingPreferences::PLANK_CAPTURE_SCREENCAPTUREKIT) ?
                 StreamingPreferences::PlankFramesPerSecond : m_Preferences->fps;
+    std::optional<DecoderProbe> probe;
+    if (!selectAutomaticVideoProfile(testWindow, probe)) {
+        return false;
+    }
     m_StreamConfig.bitrate = m_PlankBitrateKbps;
 
     qInfo("Video bitrate: %d kbps",
@@ -2117,20 +2179,11 @@ bool Session::initialize(IFFmpegRendererFactory* presenter)
 
     // Check for validation errors/warnings and emit
     // signals for them, if appropriate
-    bool ret = validateLaunch(testWindow);
-
-    if (ret) {
-        // Video format is now locked in
-        m_StreamConfig.supportedVideoFormats = m_SupportedVideoFormats.front();
-
-        // Populate decoder-dependent properties.
-        // Must be done after validateLaunch() since m_StreamConfig is finalized.
-        ret = populateDecoderProperties(testWindow);
-    }
-
-    if (!ret) {
+    if (!validateLaunch(testWindow, probe)) {
         return false;
     }
+    m_StreamConfig.supportedVideoFormats = m_SupportedVideoFormats.front();
+    populateDecoderProperties(*probe);
 
     keepSdlVideo = initializedSdlVideo;
     return true;
@@ -2151,7 +2204,7 @@ void Session::emitLaunchWarning(QString text)
     }
 }
 
-bool Session::validateLaunch(SDL_Window* testWindow)
+bool Session::validateLaunch(SDL_Window* testWindow, std::optional<DecoderProbe>& probe)
 {
     m_SupportedVideoFormats.removeByMask(
                 ~m_SupportedVideoFormats.maskByServerCodecModes(m_Computer->serverCodecModeSupport));
@@ -2160,21 +2213,19 @@ bool Session::validateLaunch(SDL_Window* testWindow)
         return false;
     }
 
-    // Probe exact-format hardware, then exact-format software. Never silently
-    // substitute the selected codec, chroma sampling or bit depth.
-    while (!m_SupportedVideoFormats.isEmpty()) {
-        const auto availability = getDecoderAvailability(
-                    m_SupportedVideoFormats.front(),
-                    m_StreamConfig.width,
-                    m_StreamConfig.height,
-                    m_StreamConfig.fps,
-                    isIdentityGbrEnabledForFormat(m_SupportedVideoFormats.front()),
-                    testWindow);
-        if (availability == DecoderAvailability::None) {
+    // Automatic already proved the exact format at this geometry. For a
+    // manual choice or geometry change, probe exact hardware then software.
+    while (!probe && !m_SupportedVideoFormats.isEmpty()) {
+        const int format = m_SupportedVideoFormats.front();
+        IVideoDecoder* decoder = nullptr;
+        if (chooseDecoder(format, m_StreamConfig.width, m_StreamConfig.height, m_StreamConfig.fps,
+                          false, true, decoder, isIdentityGbrEnabledForFormat(format),
+                          decoderCaptureSource(), decoderEncoderBackend(), m_RendererFactory, testWindow)) {
+            probe = DecoderProbe{decoder->getDecoderCapabilities(), decoder->getDecoderColorspace(),
+                                 decoder->getDecoderColorRange()};
+            delete decoder;
+        } else {
             m_SupportedVideoFormats.removeFirst();
-        }
-        else {
-            break;
         }
     }
     if (m_SupportedVideoFormats.isEmpty()) {
@@ -2222,26 +2273,26 @@ private:
 
     void run() override
     {
-        // Snapshot before sessionFinished, on the same emitter thread, so a
-        // queued GUI receiver cannot finalize/upload before the terminal cause.
-        m_Session->publishDiagnosticLifecycle(true);
-#ifdef Q_OS_MACOS
-        if (!m_Session->m_ApplicationExitRequested.load())
-#endif
-        emit m_Session->sessionFinished();
-
         // The video decoder must already be destroyed, since it could
         // try to interact with APIs that can only be called between
         // LiStartConnection() and LiStopConnection().
         SDL_assert(m_Session->m_VideoDecoder == nullptr);
 
         // Finish cleanup of the connection state
+        qInfo() << "Session connection cleanup started";
 #ifdef PLANK_TRANSPORT
         m_Session->stopPlankTransportMediaReceivers();
 #endif
         LiStopConnection();
         m_Session->stopPlankTransportDataPlane();
-
+        qInfo() << "Session connection cleanup finished";
+        // The launcher can close as soon as it is shown again. Keep its event
+        // loop and broker lease alive until the stream has finished closing.
+        m_Session->publishDiagnosticLifecycle(true);
+#ifdef Q_OS_MACOS
+        if (!m_Session->m_ApplicationExitRequested.load())
+#endif
+        emit m_Session->sessionFinished();
     }
 
     Session* m_Session;
@@ -4027,8 +4078,49 @@ bool Session::startConnectionAsync(bool reconnecting,
                           acceptedClipboardSync,
                           m_ResolvedPrimaryOutput);
         };
+        // A fresh Connect may reach the Host before QUIC notices that the old
+        // process exited. The Host rejects this launch before claiming its
+        // bearer, so retry only that explicit response on the established route.
+        const auto startAfterPreviousTransport = [&]() {
+            const bool mayWait = m_Computer->plankAuthentication && !macCapture &&
+                    !reconnecting && !takeOverActiveSession && !isCollaborator();
+            QElapsedTimer wait;
+            const auto clearWait = qScopeGuard([&] {
+                if (wait.isValid()) {
+                    m_WaitingForSessionCleanup.store(false);
+                    emit sessionCleanupWaitChanged(false, QString());
+                }
+            });
+            while (!m_ConnectionStartCancelled.load() && !m_Lifecycle.stopping()) {
+                try {
+                    startApp();
+                    return true;
+                } catch (const GfeHttpResponseException& error) {
+                    if (!mayWait || !PlankReconnectPolicy::activeDesktopResponse(
+                                error.getStatusCode(), error.getStatusMessage()) ||
+                            !http->displayArrangementError().isEmpty() ||
+                            http->desktopSignOut().state != PlankDesktopSignOut::State::None) {
+                        throw;
+                    }
+                    if (!wait.isValid()) {
+                        wait.start();
+                        m_WaitingForSessionCleanup.store(true);
+                        emit sessionCleanupWaitChanged(true, tr("Waiting for the previous connection to close…"));
+                    }
+                    constexpr int RetryIntervalMs = 500;
+                    constexpr int CancellationPollMs = 50;
+                    for (int elapsed = 0; elapsed < RetryIntervalMs; elapsed += CancellationPollMs) {
+                        if (m_ConnectionStartCancelled.load() || m_Lifecycle.stopping()) return false;
+                        if (wait.elapsed() >= PlankReconnectPolicy::PreviousTransportGraceMs) throw;
+                        QThread::msleep(CancellationPollMs);
+                    }
+                    if (wait.elapsed() >= PlankReconnectPolicy::PreviousTransportGraceMs) throw;
+                }
+            }
+            return false;
+        };
         try {
-            startApp();
+            if (!startAfterPreviousTransport()) return false;
         } catch (const GfeHttpResponseException& e) {
             const QString statusMessage = QString::fromUtf8(e.getStatusMessage());
             const QString arrangementError = http->displayArrangementError();
@@ -4065,9 +4157,7 @@ bool Session::startConnectionAsync(bool reconnecting,
                           QStringLiteral("Host display layout transition is currently unavailable")));
             const bool activeSessionConflict =
                     m_Computer->plankAuthentication &&
-                    e.getStatusCode() == 409 &&
-                    QString::fromUtf8(e.getStatusMessage()) ==
-                        QStringLiteral("PLANK workstation session is active");
+                    PlankReconnectPolicy::activeDesktopResponse(e.getStatusCode(), e.getStatusMessage());
             const PlankDesktopSignOut desktopConflict =
                     m_Computer->plankAuthentication ? http->desktopSignOut() :
                                                       PlankDesktopSignOut();
@@ -5151,7 +5241,11 @@ bool Session::runPlankReconnect()
             if (PlankReconnectPolicy::terminalStatus(error.getStatusCode(), authenticating,
                                                      openingDesktop)) {
                 m_Lifecycle.stop();
-                emit displayLaunchError(error.toQString());
+                if (authenticating && isPlankBrokered() && error.getStatusCode() == 401) {
+                    emit displayLaunchError(tr("The stream disconnected and the workstation declined the reconnect. Connect again from the Remote list."));
+                } else {
+                    emit displayLaunchError(error.toQString());
+                }
             } else if (openingDesktop && authenticating && error.getStatusCode() == 401) {
                 qInfo() << "PLANK desktop worker is changing; retrying broker admission";
             }
@@ -6264,8 +6358,11 @@ void Session::execInternal()
                 if (!finishPlankReconnect(
                             reconnectSucceeded, reconnectState)) {
                     m_Diagnostics.end(SessionDiagnostics::End::ReconnectFailed);
-                    emit displayLaunchError(
-                                tr("The workstation desktop changed, but the client could not reconnect."));
+                    if (!m_Lifecycle.stopping()) {
+                        emit displayLaunchError(reconnectState.openingDesktop ?
+                                    tr("The workstation desktop changed, but the client could not reconnect.") :
+                                    tr("The stream disconnected and the client could not reconnect."));
+                    }
                     goto DispatchDeferredCleanup;
                 }
                 break;
@@ -6770,6 +6867,9 @@ DispatchDeferredCleanup:
     // even while a reconnect is still unwinding.
     m_InputHandler->setCaptureActive(false);
     m_InputHandler->raiseAllKeys();
+    // The reconnect worker can replace the endpoint until it joins. For an
+    // established stream, queue the close while the transport can still send.
+    if (reconnectThread == nullptr) queuePlankTransportDisconnect();
     SDL_HideWindow(m_Window);
     for (SDL_Window* window : std::as_const(m_SecondaryWindows)) SDL_HideWindow(window);
     if (workerProbe != nullptr) {
