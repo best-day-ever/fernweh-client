@@ -255,6 +255,16 @@ private slots:
   for(const auto& option:monitor.value("sizeOptions").toList())
    QVERIFY(option.toMap().value("value").toString() != "looks-like");
  }
+ void multipleWindowsSurviveSaveReopen(){
+  secondDisplay=true;controller->begin("workstation.example.test","Workstation","");
+  controller->setPresentation("windows");
+  QCOMPARE(controller->effectivePresentation(),QString("windows"));
+  QVERIFY(controller->planOk());
+  QVERIFY(QMetaObject::invokeMethod(dialog,"save"));
+  controller->begin("workstation.example.test","Workstation","");
+  QCOMPARE(controller->effectivePresentation(),QString("windows"));
+  QCOMPARE(controller->monitors().size(),2);
+ }
  void multiScreenSelectionAndPrimaryPersist(){
   secondDisplay=true;controller->begin("workstation.example.test","Workstation","");
   controller->setMonitorOn("uuid:fixture-retina",false);

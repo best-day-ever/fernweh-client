@@ -143,10 +143,6 @@ bool DisplaySetupController::fixedLayoutRequired() const
 DisplayPlanner::Limits DisplaySetupController::limits() const
 {
     DisplayPlanner::Limits limits;
-#ifdef Q_OS_WIN32
-    // One D3D11 window on Windows: never a packed capture.
-    limits.separateWindows = false;
-#endif
 #ifdef Q_OS_DARWIN
     limits.separateSpaces = MacDisplayInfo::screensHaveSeparateSpaces();
     limits.decoderMaximum = DecoderCaps::cachedMaximum(m_Host.encodingMode);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <cstring>
 
 #include <QPointF>
 #include <QRect>
@@ -125,6 +126,14 @@ struct PlankPresentationSlice
 class PlankPresentation
 {
 public:
+    static bool supportsSeparateWindows(const char* driver, bool fullscreen, bool qtFrontend = false) {
+        return qtFrontend || (driver && (std::strcmp(driver, "cocoa") == 0 || std::strcmp(driver, "windows") == 0 ||
+            (fullscreen && std::strcmp(driver, "wayland") == 0)));
+    }
+    static bool preservesPrecision(int requiredBits, int red, int green, int blue) {
+        return red >= requiredBits && green >= requiredBits && blue >= requiredBits;
+    }
+
     // Commit the selected monitor independently of whether it owns the only
     // window or the primary of several. Failed placement keeps the live id.
     static bool placePrimaryDisplay(quint32& current, quint32 selected,

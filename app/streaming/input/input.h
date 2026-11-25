@@ -32,6 +32,8 @@ class PlankMacPenInput;
 #endif
 #ifdef Q_OS_WIN
 class WindowsRawWacomInput;
+class WindowsPenInput;
+class PlankWin32Cursor;
 #endif
 #ifdef Q_OS_MACOS
 class MacQuitShortcut;
@@ -65,6 +67,9 @@ public:
     void setStreamDimensions(int streamWidth, int streamHeight);
 
     void setPresentationLayout(const PlankPresentationLayout& layout);
+#ifdef Q_OS_WIN
+    void suspendWindowsPresentation();
+#endif
 
     // The active renderer letterboxes against the live drawable
     // (IVideoDecoder::letterboxesAgainstLiveDrawable()). Single-output input
@@ -310,6 +315,14 @@ private:
 #endif
 #ifdef Q_OS_WIN
     std::unique_ptr<WindowsRawWacomInput> m_WindowsRawWacomInput;
+    std::unique_ptr<PlankWin32Cursor> m_WindowsCursor;
+    void updateWindowsCursor();
+    void pollWindowsPen();
+    bool m_WindowsPresentationChanging = false;
+    bool windowsPenAllowed();
+    bool nativePenOwnsPointer() const;
+    std::uint64_t m_WindowsCursorGeneration = UINT64_MAX;
+    std::unique_ptr<WindowsPenInput> m_WindowsPenInput;
 #endif
 
     static const int k_ButtonMap[];

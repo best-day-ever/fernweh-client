@@ -75,6 +75,9 @@ private:
 
     // SDL state
     SDL_Window* m_Window = nullptr;
+    bool m_RequireTenBit = false;
+    bool m_IdentityGbr = false;
+    bool preservesTargetPrecision(const pl_swapchain_frame& frame) const;
     QSize m_PresentationCanvasSize;
 
     struct PresentationTarget {
