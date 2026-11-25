@@ -28,6 +28,7 @@
 #include <QScopedValueRollback>
 #include <algorithm>
 #include <tuple>
+#include <utility>
 
 QtSessionRuntime::QtSessionRuntime(Session* session) : QObject(session), m_Session(session)
 {
@@ -766,6 +767,8 @@ void QtSessionRuntime::finishWorker()
     m_Session->m_Lifecycle.finished();
     m_StartupDeadline.stop(); m_Tick.stop();
     setInputEnabled(false);
+    disconnect(qGuiApp, nullptr, this, nullptr);
+    QCoreApplication::instance()->removeEventFilter(this);
 #ifdef Q_OS_LINUX
     m_WindowGuard->setIdleWindow(nullptr);
 #endif
@@ -773,7 +776,11 @@ void QtSessionRuntime::finishWorker()
     if (m_Presenter) m_Presenter->stop();
     m_Factory.reset();
     m_Presenter.reset();
-    m_Windows.clear();
+    // Native window destruction can synchronously deliver Qt events. Detach
+    // the windows before any callback can see a partially destroyed collection.
+    m_PointerWindow.clear();
+    m_PointerCandidateWindow.clear();
+    std::exchange(m_Windows, {}).clear();
     m_Session->m_QtPreparePresentation = {};
     if (m_OwnsSession) {
         m_Session->m_RendererFactory = nullptr;
@@ -781,7 +788,6 @@ void QtSessionRuntime::finishWorker()
         Session::s_ActiveSessionSemaphore.release();
         m_OwnsSession = false;
     }
-    QCoreApplication::instance()->removeEventFilter(this);
     QGuiApplication::setQuitOnLastWindowClosed(m_PreviousQuitOnLastWindow);
     // Do not access this after readyForDeletion: QML may collect Session.
     if (m_ExitApplication) QTimer::singleShot(0, QCoreApplication::instance(), &QCoreApplication::quit);
