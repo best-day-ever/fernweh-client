@@ -31,7 +31,6 @@ Item {
 
     TestCase {
         name: "StreamSegue"
-        when: windowShown
         property Item segue
         property Session session
 
