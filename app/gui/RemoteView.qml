@@ -22,6 +22,7 @@ Item {
     }
 
     property string errorText: ""
+    readonly property bool hostStatusesStale: RemoteBroker.hostStatusError !== ""
     // Set after a Touch ID fallback or by "Use password instead".
     property bool usePassword: false
     Timer {
@@ -511,7 +512,7 @@ Item {
     // say what they mean, and never repeat the state ("Offline · offline").
     function hostStatusText(host) {
         var parts = []
-        parts.push(!host.online ? qsTr("Offline") : host.sharedDesktop ? qsTr("Shared desktop") :
+        parts.push(!host.online ? qsTr("Offline in Fernweh") : host.sharedDesktop ? qsTr("Shared desktop") :
                    (host.busy || host.inUseBy !== "" || (host.connectedUsers || []).length > 0) ? qsTr("Busy") : qsTr("Online"))
         if (host.inUseBy !== "" && !host.sharedDesktop) {
             parts.push(qsTr("in use by %1").arg(host.inUseBy))
@@ -797,8 +798,17 @@ Item {
             Layout.fillWidth: true
         }
 
+        Label {
+            visible: remoteView.hostStatusesStale
+            text: RemoteBroker.hostStatusError
+            textFormat: Text.PlainText
+            color: theme.warning
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
+
         Rectangle {
-            visible: hostList.count === 0 && !RemoteBroker.busy
+            visible: hostList.count === 0 && !RemoteBroker.busy && !remoteView.hostStatusesStale
             Layout.fillWidth: true
             implicitHeight: emptyColumn.implicitHeight + 40
             radius: theme.radiusMedium
@@ -840,6 +850,7 @@ Item {
                 width: hostList.width
                 host: modelData
                 statusText: remoteView.hostStatusText(modelData)
+                statusCurrent: !remoteView.hostStatusesStale
                 busy: RemoteBroker.busy || RemoteBroker.streamBenchmarkRunning
                 onSettingsRequested: displaySetupDialog.openFor(modelData.id, modelData.name, false, "")
                 onBenchmarkRequested: {

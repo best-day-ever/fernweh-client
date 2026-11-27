@@ -42,6 +42,7 @@ class RemoteBroker : public QObject
     Q_PROPERTY(QString rememberedUsername READ rememberedUsername NOTIFY stateChanged)
     Q_PROPERTY(QString sessionNotice READ sessionNotice NOTIFY stateChanged)
     Q_PROPERTY(QVariantList hosts READ hosts NOTIFY hostsChanged)
+    Q_PROPERTY(QString hostStatusError READ hostStatusError NOTIFY hostStatusErrorChanged)
     Q_PROPERTY(bool streamBenchmarkRunning READ streamBenchmarkRunning NOTIFY stateChanged)
     // Touch ID sign-in: helper present (macOS), local keys for the
     // configured relying party ({username, credentialId, mapping, created}),
@@ -143,6 +144,7 @@ public:
     void reportSessionNotice(const QString& text);
     Q_INVOKABLE void dismissSessionNotice() { reportSessionNotice(QString()); }
     QVariantList hosts() const { return m_Hosts; }
+    QString hostStatusError() const { return m_HostStatusError; }
     bool passkeySupported() const { return m_PasskeyHelper.available(); }
     QVariantList passkeys() const { return m_Passkeys; }
     QStringList passkeyUsers() const;
@@ -155,6 +157,7 @@ signals:
     void configurationChanged();
     void stateChanged();
     void hostsChanged();
+    void hostStatusErrorChanged();
     // Generic, user-facing message (never broker- or host-supplied text).
     void errorOccurred(QString message);
     void connectReady(QString hostName);
@@ -181,6 +184,7 @@ private:
     void finishSignIn(QString token, const QString& confirmedUser, bool offerTouchId = false, bool deviceBound = false);
     void setBusy(const QString& text);
     void refreshHostsImpl(bool showBusy);
+    void setHostStatusError(const QString& message);
     void handleBrokerError(const PlankBrokerError& error, bool connecting);
     void signOutLocally(const QString& message = QString());
     // LAN bookmarks that could seed a workstation's first stream settings.
@@ -235,6 +239,7 @@ private:
     QString m_SessionNotice;
     QString m_BusyText;
     QVariantList m_Hosts;
+    QString m_HostStatusError;
     PlankPasskeyHelper m_PasskeyHelper;
     QVariantList m_Passkeys;
     bool m_PasskeyBusy = false;
