@@ -5,6 +5,8 @@ import QtQuick.Window 2.2
 import Session 1.0
 
 Item {
+    id: streamSegue
+
     property Session session
     property string appName
     property string stageText : isResume ? qsTr("Resuming %1...").arg(appName) :
@@ -12,6 +14,7 @@ Item {
     property bool isResume : false
     property bool quitAfter : false
     property bool benchmark: false
+    property bool removedFromStack: false
 
     function stageStarting(stage)
     {
@@ -29,10 +32,17 @@ Item {
         }
     }
 
+    function stopStageAnimation()
+    {
+        spinnerTimer.stop()
+        spinnerTimer.delayElapsed = false
+    }
+
     function connectionStarted()
     {
         // Hide the UI contents so the user doesn't
         // see them briefly when we pop off the StackView
+        stopStageAnimation()
         stageSpinner.visible = false
         stageLabel.visible = false
         hintText.visible = false
@@ -112,6 +122,7 @@ Item {
 
     function sessionFinished()
     {
+        stopStageAnimation()
         activeSessionTakeoverDialog.close()
         desktopSignOutDialog.close()
         desktopCollaborationDialog.close()
@@ -127,7 +138,8 @@ Item {
             }
         } else {
             // Exit this view
-            stackView.pop()
+            if (stackView.currentItem === streamSegue)
+                stackView.pop()
 
             // Show the Qt window again after streaming
             window.visible = true
@@ -147,10 +159,25 @@ Item {
         // Garbage collect the Session object since it's pretty heavyweight
         // and keeps session-owned resources alive until it is deleted.
         session = null
+        destroyAfterCleanup()
         gc()
     }
 
+    function destroyAfterCleanup()
+    {
+        // The caller created this item, so StackView will not delete it.
+        // Keep the Session reference until deferred transport cleanup is done.
+        if (removedFromStack && session === null)
+            destroy()
+    }
+
+    StackView.onRemoved: {
+        removedFromStack = true
+        destroyAfterCleanup()
+    }
+
     StackView.onDeactivating: {
+        stopStageAnimation()
         // Show the toolbar again when popped off the stack
         toolBar.visible = true
     }
@@ -208,6 +235,7 @@ Item {
 
     Timer {
         id: spinnerTimer
+        property bool delayElapsed: false
 
         // Display the spinner appearance a bit to allow us to reach
         // the code in Session.exec() that pumps the event loop.
@@ -215,7 +243,7 @@ Item {
         // middle of the animation on Windows, which looks very
         // obviously broken.
         interval: 100
-        onTriggered: stageSpinner.running = true
+        onTriggered: delayElapsed = true
     }
 
     Loader {
@@ -248,7 +276,8 @@ Item {
 
             BusyIndicator {
                 id: stageSpinner
-                running: false
+                objectName: "connectionSpinner"
+                running: visible && spinnerTimer.delayElapsed
             }
 
             Label {
