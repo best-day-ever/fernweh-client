@@ -1480,9 +1480,20 @@ void RemoteBroker::connectToHostImpl(const QString& hostId, int benchmarkProfile
             brokerFailure = std::make_shared<PlankBrokerError>(error);
         } catch (const GfeHttpResponseException& error) {
             qWarning() << "Brokered workstation preparation failed:" << error.toQString();
-            hostFailure = error.getStatusCode() == 401 ?
-                        tr("The workstation did not accept the remote sign-in. Connect again from the list.") :
-                        tr("The workstation could not be prepared for streaming: %1").arg(error.toQString());
+            switch (error.getStatusCode()) {
+            case 401:
+                // Older hosts use 401 for both denied and interrupted admission.
+                hostFailure = tr("The workstation couldn't start the remote connection. "
+                                 "Try connecting again from the list. If it keeps failing, contact IT.");
+                break;
+            case 503:
+                hostFailure = tr("The workstation is temporarily unable to start a remote connection. "
+                                 "Try again in a moment.");
+                break;
+            default:
+                hostFailure = tr("The workstation could not be prepared for streaming: %1").arg(error.toQString());
+                break;
+            }
         } catch (const QtNetworkReplyException& error) {
             qWarning() << "Brokered workstation connection failed:" << error.toQString();
             hostFailure = error.getError() == QNetworkReply::SslHandshakeFailedError ?
