@@ -223,6 +223,7 @@ void RemoteBroker::signOutLocally(const QString& message)
     m_Username.clear();
     configureDiagnostics();
     m_Hosts.clear();
+    setHostStatusError(QString());
     m_BusyText.clear();
     if (!message.isEmpty()) m_SessionNotice = message;
     emit hostsChanged();
@@ -614,6 +615,13 @@ void RemoteBroker::refreshHosts()
     refreshHostsImpl(true);
 }
 
+void RemoteBroker::setHostStatusError(const QString& message)
+{
+    if (m_HostStatusError == message) return;
+    m_HostStatusError = message;
+    emit hostStatusErrorChanged();
+}
+
 void RemoteBroker::refreshHostsImpl(bool showBusy)
 {
     if (!signedIn() || busy()) return;
@@ -637,7 +645,12 @@ void RemoteBroker::refreshHostsImpl(bool showBusy)
             if (!token->finishRefresh(refresh)) return;
             if (generation != self->m_Generation) return;
             if (failure) {
-                self->handleBrokerError(*failure, false);
+                if (failure->kind() == PlankBrokerError::SessionExpired) {
+                    self->signOutLocally(failure->userMessage());
+                } else {
+                    self->setHostStatusError(failure->userMessage());
+                    self->setBusy(QString());
+                }
                 return;
             }
             QVariantList list;
@@ -655,6 +668,7 @@ void RemoteBroker::refreshHostsImpl(bool showBusy)
                 list.append(entry);
             }
             self->m_Hosts = list;
+            self->setHostStatusError(QString());
             self->setBusy(QString());
             emit self->hostsChanged();
         }, Qt::QueuedConnection);

@@ -6,8 +6,12 @@ Rectangle {
     id: card
     property var host
     property string statusText
+    property bool statusCurrent: true
     property bool busy: false
-    readonly property var people: host.connectedUsers || []
+    readonly property var people: statusCurrent ? (host.connectedUsers || []) : []
+    // Explicit connection requests re-probe hosts the broker last saw offline.
+    readonly property bool canConnect: host.connectable || (!host.online && host.reason === "offline")
+    readonly property bool tryConnect: !statusCurrent || !host.connectable
     signal settingsRequested()
     signal connectRequested()
     signal benchmarkRequested()
@@ -28,7 +32,7 @@ Rectangle {
         spacing: theme.spaceMedium
         Rectangle {
             width: 10; height: 10; radius: 5
-            color: !card.host.online ? theme.textDisabled :
+            color: !card.statusCurrent || !card.host.online ? theme.textDisabled :
                    (!card.host.sharedDesktop && (card.host.busy || card.people.length > 0 || card.host.inUseBy !== "") ? theme.warning : theme.success)
             Layout.alignment: Qt.AlignVCenter
         }
@@ -45,7 +49,8 @@ Rectangle {
                 textFormat: Text.PlainText
             }
             Label {
-                text: card.statusText
+                objectName: "workstationStatus"
+                text: card.statusCurrent ? card.statusText : qsTr("Status unavailable")
                 color: theme.textSecondary
                 font.pointSize: 10
                 wrapMode: Text.Wrap
@@ -64,10 +69,11 @@ Rectangle {
             }
         }
         Button {
+            objectName: "benchmarkButton"
             text: qsTr("Test connection…")
             Accessible.name: qsTr("Test connection to %1").arg(card.host.name)
             flat: true
-            enabled: card.host.connectable && !card.busy
+            enabled: card.statusCurrent && card.host.connectable && !card.busy
             onClicked: card.benchmarkRequested()
         }
         Button {
@@ -79,10 +85,12 @@ Rectangle {
         }
         Button {
             objectName: "connectButton"
-            text: qsTr("Connect")
-            Accessible.name: qsTr("Connect to %1").arg(card.host.name)
-            highlighted: card.host.connectable
-            enabled: card.host.connectable && !card.busy
+            text: card.canConnect && card.tryConnect ? qsTr("Try connecting") : qsTr("Connect")
+            Accessible.name: card.canConnect && card.tryConnect ?
+                             qsTr("Try connecting to %1").arg(card.host.name) :
+                             qsTr("Connect to %1").arg(card.host.name)
+            highlighted: card.canConnect
+            enabled: card.canConnect && !card.busy
             onClicked: card.connectRequested()
         }
     }

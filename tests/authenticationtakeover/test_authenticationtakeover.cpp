@@ -54,7 +54,9 @@ private slots:
         auto *card = root->findChild<QQuickItem*>("card");
         auto *people = root->findChild<QQuickItem*>("connectedPeople");
         auto *button = root->findChild<QQuickItem*>("connectButton");
-        QVERIFY(card && people && button);
+        auto *benchmark = root->findChild<QQuickItem*>("benchmarkButton");
+        auto *status = root->findChild<QQuickItem*>("workstationStatus");
+        QVERIFY(card && people && button && benchmark && status);
         QTRY_VERIFY(people->height() > 20); // All names wrap inside the row.
         QVERIFY(people->property("text").toString().contains("supervisor"));
         QVERIFY(people->mapToItem(card, QPointF(0, people->height())).y() <= card->height());
@@ -76,6 +78,16 @@ private slots:
         actions->doAction(QAccessibleActionInterface::pressAction());
         QCOMPARE(connectClick.size(), 2);
         card->setProperty("busy", false);
+        card->setProperty("statusCurrent", false);
+        QTRY_VERIFY(!people->isVisible());
+        QVERIFY(button->isEnabled());
+        QVERIFY(!benchmark->isEnabled());
+        QCOMPARE(status->property("text").toString(), QStringLiteral("Status unavailable"));
+        card->setProperty("statusCurrent", true);
+        QTRY_VERIFY(people->isVisible());
+        QVERIFY(benchmark->isEnabled());
+        QCOMPARE(status->property("text").toString(), QStringLiteral("Busy"));
+
         QVariantMap host{{"name", "workstation-02"}, {"inUseBy", ""}, {"busy", false}};
         host["connectedUsers"] = QStringList();
         host["online"] = false;
@@ -84,6 +96,22 @@ private slots:
         QTRY_VERIFY(!people->isVisible());
         QVERIFY(!button->isEnabled());
         QCOMPARE(accessibleButton->text(QAccessible::Name), QStringLiteral("Connect to workstation-02"));
+
+        host["reason"] = QStringLiteral("offline");
+        card->setProperty("host", host);
+        QVERIFY(button->isEnabled());
+        QVERIFY(!benchmark->isEnabled());
+        QCOMPARE(accessibleButton->text(QAccessible::Name), QStringLiteral("Try connecting to workstation-02"));
+        actions->doAction(QAccessibleActionInterface::pressAction());
+        QCOMPARE(connectClick.size(), 3);
+
+        for (const QString& reason : {QStringLiteral("certificate changed"), QStringLiteral("no address")}) {
+            host["reason"] = reason;
+            card->setProperty("host", host);
+            QVERIFY(!button->isEnabled());
+            actions->doAction(QAccessibleActionInterface::pressAction());
+            QCOMPARE(connectClick.size(), 3);
+        }
         QVERIFY(warnings.isEmpty());
     }
 
